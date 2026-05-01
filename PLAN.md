@@ -19,7 +19,7 @@
 | 组件 | 选型 | 备注 |
 |---|---|---|
 | 基座 LLM | Qwen2.5-1.5B-Instruct | 备选 0.5B（显存吃紧时降级） |
-| 视觉塔 | SigLIP-SO400M-patch14-384 | 全程冻结 |
+| 视觉塔 | SigLIP2-SO400M-patch14-384 | 全程冻结 |
 | 投影层 | 2-layer MLP（hidden=2048，gelu） | 视觉特征 → LLM embedding |
 | 精度 | bf16 + gradient checkpointing | |
 | 训练框架 | LLaMA-Factory（首选）/ ms-swift | 内置 VL collator，省事 |
