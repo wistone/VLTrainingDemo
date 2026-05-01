@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Training artifacts
+checkpoint-*/
+runs/
+wandb/
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+
+# Data (too large for git)
+data/
+images/
+*.zip
+*.tar
+*.tar.gz
+
+# Logs
+*.log
+logs/
+
+# Credentials
+.env
+.env.*
+*.token
+hf_token*
+wandb_*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
