@@ -105,15 +105,24 @@ def sync_drive_to_local():
     print(f"[sync] 完成（耗时 {fmt_time(time.time()-t0)}）")
 
 
+def is_extracted():
+    """检查 00xxx 子目录是否已存在（解压完成的标志）。"""
+    sample_dirs = [LOCAL_DIR / f"{i:05d}" for i in (0, 100, 500)]
+    return any(d.exists() and any(d.iterdir()) for d in sample_dirs if d.exists())
+
+
 def unzip_images():
     images_zip = LOCAL_DIR / ZIP_NAME
-    images_dir = LOCAL_DIR / "images"
 
-    if images_dir.exists() and len(list(images_dir.iterdir())) > 100:
-        print(f"[skip] 图像已解压于 {images_dir}")
+    if is_extracted():
+        print(f"[skip] 图像已解压于 {LOCAL_DIR}（看到 00xxx 子目录）")
         return
 
-    print(f"[unzip] 解压 {images_zip} → {LOCAL_DIR}/images/（~5 min）")
+    if not images_zip.exists():
+        print(f"[error] {images_zip} 不存在但图像未解压。先跑 sync_drive_to_local")
+        sys.exit(1)
+
+    print(f"[unzip] 解压 {images_zip} → {LOCAL_DIR}/（~5 min，58 万小文件）")
     t0 = time.time()
     subprocess.run(
         ["unzip", "-q", "-o", str(images_zip), "-d", str(LOCAL_DIR)],
@@ -122,21 +131,34 @@ def unzip_images():
     print(f"[unzip] 完成（耗时 {fmt_time(time.time()-t0)}）")
 
 
+def cleanup_local_zip():
+    """解压成功后，本地 zip 已无用——删除以释放 ~27GB。Drive 上的副本保留作持久缓存。"""
+    images_zip = LOCAL_DIR / ZIP_NAME
+    if not images_zip.exists():
+        return
+    if not is_extracted():
+        print(f"[cleanup] 跳过——图像未解压完成，保留本地 zip 以便重试")
+        return
+    size_gb = images_zip.stat().st_size / 1e9
+    images_zip.unlink()
+    print(f"[cleanup] 删除本地 zip（释放 {size_gb:.1f}GB）；Drive 缓存保留：{DRIVE_DIR / ZIP_NAME}")
+
+
 def verify():
     json_path = LOCAL_DIR / JSON_NAME
-    images_dir = LOCAL_DIR / "images"
 
     print(f"[verify] 加载 {json_path}")
     with open(json_path) as f:
         data = json.load(f)
     print(f"[verify] 总样本数: {len(data)}")
 
-    print(f"[verify] 抽样 5 条校验：")
+    # JSON 里的 "image" 字段形如 "00217/002170933.jpg"，相对 LOCAL_DIR
+    print(f"[verify] 抽样 5 条校验（基准目录 {LOCAL_DIR}）：")
     random.seed(0)
     sampled = random.sample(data, 5)
     all_ok = True
     for s in sampled:
-        img_path = images_dir / s["image"]
+        img_path = LOCAL_DIR / s["image"]
         if not img_path.exists():
             print(f"  MISSING: {s['image']}")
             all_ok = False
@@ -183,9 +205,18 @@ if __name__ == "__main__":
     print(f"DRIVE_DATA_ROOT (Drive，持久缓存): {DRIVE_DATA_ROOT}")
     print()
 
-    download_to_drive()
-    sync_drive_to_local()
-    unzip_images()
+    # 已解压则跳过下载/同步/解压三步（典型情况：zip 删过、新 session 但用 persistent disk）
+    if is_extracted():
+        print("[main] 检测到本地已解压，跳过下载/同步/解压\n")
+        # 仍要确保 json 在本地（解压时已带过来，但保险起见）
+        if not (LOCAL_DIR / JSON_NAME).exists():
+            sync_drive_to_local()
+    else:
+        download_to_drive()
+        sync_drive_to_local()
+        unzip_images()
+        cleanup_local_zip()
+
     verify()
     split_holdout()
     print("\n所有步骤完成。下一步：python stage1/02_assemble_model.py")

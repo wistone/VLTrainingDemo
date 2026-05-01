@@ -188,9 +188,10 @@ def main():
         model.language_model.gradient_checkpointing_enable()
 
     # 数据集
+    # LLaVA-Pretrain 的 zip 解压后 00xxx 子目录直接在 data_root 下，没有 images/ 这层
     print(f"\n加载数据 from {args.data_root}")
     json_path = Path(args.data_root) / "blip_laion_cc_sbu_558k.json"
-    image_root = Path(args.data_root) / "images"
+    image_root = Path(args.data_root)
     limit = 100 if args.smoke_test else None
     dataset = LlavaPretrainDataset(
         json_path, image_root, tokenizer, image_processor,

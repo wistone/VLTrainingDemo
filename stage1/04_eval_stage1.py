@@ -164,7 +164,8 @@ def main():
         raise FileNotFoundError(f"找不到 {holdout_path}，请先跑 01_prepare_data.py")
     with open(holdout_path) as f:
         holdout = json.load(f)
-    image_root = Path(args.data_root) / "images"
+    # LLaVA-Pretrain 的 zip 解压后 00xxx 子目录直接在 data_root 下
+    image_root = Path(args.data_root)
 
     model, tokenizer, image_processor = load_model(args.ckpt_dir)
 
