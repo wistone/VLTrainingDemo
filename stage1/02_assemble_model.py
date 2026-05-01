@@ -1,8 +1,8 @@
-"""组装 LLaVA-style VL 模型：Qwen2.5-1.5B-Instruct + SigLIP-SO400M + 2-layer MLP projector。
+"""组装 LLaVA-style VL 模型：Qwen2.5-1.5B-Instruct + SigLIP2-SO400M + 2-layer MLP projector。
 
 核心步骤：
 1. 加载 Qwen2.5-1.5B 文本模型 + tokenizer
-2. 加载 SigLIP-SO400M 视觉塔 + image processor
+2. 加载 SigLIP2-SO400M 视觉塔 + image processor（用 AutoModel/AutoImageProcessor 以兼容 v1/v2）
 3. 给 tokenizer 添加 <image> 特殊 token，扩展 LLM embedding
 4. 构造 LlavaConfig，把 text_config + vision_config 拼起来
 5. 用 LlavaForConditionalGeneration(config) 构建空壳模型
@@ -15,23 +15,28 @@
 
 用法：
     python stage1/02_assemble_model.py
+
+切回 SigLIP v1（如需对比实验）：
+    VISION_NAME=google/siglip-so400m-patch14-384 python stage1/02_assemble_model.py
 """
 import os
 from pathlib import Path
 
 import torch
 from transformers import (
+    AutoImageProcessor,
+    AutoModel,
     AutoModelForCausalLM,
     AutoTokenizer,
     LlavaConfig,
     LlavaForConditionalGeneration,
-    SiglipImageProcessor,
-    SiglipVisionModel,
 )
 
 OUT_DIR = Path(os.environ.get("MODEL_INIT_DIR", "/content/drive/MyDrive/qwenvl3/stage1_init"))
 LLM_NAME = os.environ.get("LLM_NAME", "Qwen/Qwen2.5-1.5B-Instruct")
-VISION_NAME = os.environ.get("VISION_NAME", "google/siglip-so400m-patch14-384")
+# SigLIP2 SO400M @ patch14-384：同尺寸同 token 数（729）作为 v1 的 drop-in 替换。
+# v1 备选: google/siglip-so400m-patch14-384
+VISION_NAME = os.environ.get("VISION_NAME", "google/siglip2-so400m-patch14-384")
 
 
 def main():
@@ -46,13 +51,15 @@ def main():
         torch_dtype=torch.bfloat16,
     )
 
-    # 2. 视觉塔
+    # 2. 视觉塔（用 AutoModel 自动选 SiglipVisionModel 或 Siglip2VisionModel）
     print(f"\n[2/5] 加载视觉塔: {VISION_NAME}")
-    image_processor = SiglipImageProcessor.from_pretrained(VISION_NAME)
-    vision_model = SiglipVisionModel.from_pretrained(
-        VISION_NAME,
-        torch_dtype=torch.bfloat16,
-    )
+    image_processor = AutoImageProcessor.from_pretrained(VISION_NAME)
+    # SigLIP/SigLIP2 完整模型是双塔（vision + text），LLaVA 只需要 vision 塔
+    full_siglip = AutoModel.from_pretrained(VISION_NAME, torch_dtype=torch.bfloat16)
+    vision_model = full_siglip.vision_model
+    vision_config = full_siglip.config.vision_config
+    print(f"  vision tower 类型: {type(vision_model).__name__}")
+    print(f"  vision_config: hidden_size={vision_config.hidden_size}, patches={vision_config.image_size//vision_config.patch_size}^2")
 
     # 3. 添加 <image> token
     print("\n[3/5] 添加 <image> 特殊 token")
@@ -72,7 +79,7 @@ def main():
     print("\n[4/5] 构造 LlavaConfig")
     llava_config = LlavaConfig(
         text_config=text_model.config,
-        vision_config=vision_model.config,
+        vision_config=vision_config,
         image_token_index=image_token_id,
         projector_hidden_act="gelu",
         vision_feature_layer=-2,

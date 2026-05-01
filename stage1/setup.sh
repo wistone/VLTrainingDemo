@@ -10,18 +10,19 @@ echo
 echo "=== 安装依赖 ==="
 pip install -q --upgrade pip
 pip install -q \
-    "transformers==4.46.0" \
-    "accelerate==1.0.0" \
-    "datasets==3.0.0" \
-    "torch==2.4.0" \
+    "transformers>=4.49.0,<5.0" \
+    "accelerate>=1.0.0" \
+    "datasets>=3.0.0" \
+    "torch>=2.4.0" \
     "torchvision" \
-    "ms-swift==3.0.0" \
-    "peft==0.13.0" \
+    "ms-swift>=3.0.0" \
+    "peft>=0.13.0" \
     "huggingface_hub" \
     "wandb" \
     "sentencepiece" \
     "tiktoken" \
     "Pillow"
+# transformers >=4.49 required for SigLIP2 support (Siglip2VisionModel)
 
 echo
 echo "=== 挂载 Google Drive（如未挂载，请在 Colab cell 中先执行 from google.colab import drive; drive.mount('/content/drive')）==="
@@ -36,8 +37,12 @@ print(f'cuda available: {torch.cuda.is_available()}')
 if torch.cuda.is_available():
     print(f'device: {torch.cuda.get_device_name(0)}')
     print(f'mem: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB')
-from transformers import LlavaForConditionalGeneration, SiglipVisionModel, AutoModelForCausalLM
-print('transformers VL classes OK')
+from transformers import LlavaForConditionalGeneration, AutoModel, AutoImageProcessor, AutoModelForCausalLM
+import transformers
+print(f'transformers: {transformers.__version__}')
+# 验证 SigLIP2 类存在
+from transformers import Siglip2VisionModel
+print('SigLIP2 support OK')
 "
 
 echo
