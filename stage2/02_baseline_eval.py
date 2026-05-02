@@ -215,7 +215,7 @@ def iou(a, b):
 # ============================================================================
 
 def eval_llava_instruct(model, tokenizer, image_processor, data_root, n_samples,
-                        num_image_tokens, out_path, coco_loader):
+                        num_image_tokens, out_path, coco_loader, image_dir):
     json_path = Path(data_root) / "llava_instruct" / "llava_instruct_150k.json"
     if not json_path.exists():
         print(f"[skip] LLaVA-Instruct: {json_path} 不存在")
@@ -225,6 +225,8 @@ def eval_llava_instruct(model, tokenizer, image_processor, data_root, n_samples,
         return None
 
     print(f"\n[task] LLaVA-Instruct VQA (n={n_samples})")
+    image_dir = Path(image_dir)
+    image_dir.mkdir(parents=True, exist_ok=True)
     with open(json_path) as f:
         all_data = json.load(f)
     random.seed(42)
@@ -238,6 +240,8 @@ def eval_llava_instruct(model, tokenizer, image_processor, data_root, n_samples,
         except FileNotFoundError as e:
             print(f"  [{i+1}/{n_samples}] skip (no image)")
             continue
+        img_save_path = image_dir / f"{i+1:03d}_{s['image']}"
+        image.save(img_save_path)
         question = s["conversations"][0]["value"].replace("<image>", "").strip()
         gt_answer = s["conversations"][1]["value"]
         gen = generate_answer(model, tokenizer, image_processor, image,
@@ -247,6 +251,7 @@ def eval_llava_instruct(model, tokenizer, image_processor, data_root, n_samples,
             rates.append(rate)
         results.append({
             "idx": i + 1, "image": s["image"],
+            "image_saved_path": str(img_save_path),
             "question": question[:200], "gt_answer": gt_answer,
             "generated": gen, "keyword_match_rate": rate,
         })
@@ -275,7 +280,7 @@ def eval_llava_instruct(model, tokenizer, image_processor, data_root, n_samples,
 # ============================================================================
 
 def eval_textvqa(model, tokenizer, image_processor, data_root, n_samples,
-                  num_image_tokens, out_path):
+                  num_image_tokens, out_path, image_dir):
     """TextVQA — 用 datasets 库读 parquet。如果 repo 字段不一致会自动跳过。"""
     tv_dir = Path(data_root) / "textvqa"
     if not tv_dir.exists() or not any(tv_dir.iterdir()):
@@ -283,6 +288,8 @@ def eval_textvqa(model, tokenizer, image_processor, data_root, n_samples,
         return None
 
     print(f"\n[task] TextVQA (n={n_samples})")
+    image_dir = Path(image_dir)
+    image_dir.mkdir(parents=True, exist_ok=True)
     try:
         from datasets import load_dataset
         ds = load_dataset(str(tv_dir), split="validation", trust_remote_code=True)
@@ -319,12 +326,15 @@ def eval_textvqa(model, tokenizer, image_processor, data_root, n_samples,
         except Exception as e:
             continue
 
+        img_save_path = image_dir / f"{i+1:03d}.jpg"
+        image.save(img_save_path)
         gen = generate_answer(model, tokenizer, image_processor, image,
                               question, num_image_tokens, max_new_tokens=40)
         match = substring_match(gt_answer, gen)
         matches.append(match)
         results.append({
-            "idx": i + 1, "question": question, "gt_answer": gt_answer,
+            "idx": i + 1, "image_saved_path": str(img_save_path),
+            "question": question, "gt_answer": gt_answer,
             "generated": gen, "substring_match": match,
         })
         if i < 3 or i == len(indices) - 1:
@@ -349,7 +359,7 @@ def eval_textvqa(model, tokenizer, image_processor, data_root, n_samples,
 # ============================================================================
 
 def eval_refcoco(model, tokenizer, image_processor, data_root, n_samples,
-                 num_image_tokens, out_path, coco_loader):
+                 num_image_tokens, out_path, coco_loader, image_dir):
     """RefCOCO grounding — 输入 ref expression，期望模型输出 bbox。
 
     Stage 1 没见过 bbox 格式，预期：
@@ -365,6 +375,8 @@ def eval_refcoco(model, tokenizer, image_processor, data_root, n_samples,
         return None
 
     print(f"\n[task] RefCOCO grounding (n={n_samples})")
+    image_dir = Path(image_dir)
+    image_dir.mkdir(parents=True, exist_ok=True)
     try:
         from datasets import load_dataset
         ds = None
@@ -426,6 +438,8 @@ def eval_refcoco(model, tokenizer, image_processor, data_root, n_samples,
         except Exception:
             continue
 
+        img_save_path = image_dir / f"{i+1:03d}.jpg"
+        image.save(img_save_path)
         question = f"Where is {ref}? Answer with a bounding box."
         gen = generate_answer(model, tokenizer, image_processor, image,
                               question, num_image_tokens, max_new_tokens=40)
@@ -437,7 +451,8 @@ def eval_refcoco(model, tokenizer, image_processor, data_root, n_samples,
         ious.append(sample_iou)
 
         results.append({
-            "idx": i + 1, "ref": ref, "gt_bbox": gt_box_norm,
+            "idx": i + 1, "image_saved_path": str(img_save_path),
+            "ref": ref, "gt_bbox": gt_box_norm,
             "generated": gen, "pred_bbox": pred_box, "iou": sample_iou,
         })
         if i < 3 or i == len(indices) - 1:
@@ -463,7 +478,7 @@ def eval_refcoco(model, tokenizer, image_processor, data_root, n_samples,
 # ============================================================================
 
 def eval_sharegpt4v(model, tokenizer, image_processor, data_root, n_samples,
-                    num_image_tokens, out_path, coco_loader):
+                    num_image_tokens, out_path, coco_loader, image_dir):
     sg_dir = Path(data_root) / "sharegpt4v"
     if not sg_dir.exists() or not any(sg_dir.iterdir()):
         print(f"\n[skip] ShareGPT4V: 数据未下载 ({sg_dir})")
@@ -478,6 +493,8 @@ def eval_sharegpt4v(model, tokenizer, image_processor, data_root, n_samples,
         return None
 
     print(f"\n[task] ShareGPT4V long caption (n={n_samples})")
+    image_dir = Path(image_dir)
+    image_dir.mkdir(parents=True, exist_ok=True)
     print(f"  尝试解析 {json_files[0].name}")
 
     try:
@@ -515,6 +532,8 @@ def eval_sharegpt4v(model, tokenizer, image_processor, data_root, n_samples,
         except Exception as e:
             continue
 
+        img_save_path = image_dir / f"{i+1:03d}_{fn}"
+        image.save(img_save_path)
         question = "Describe this image in detail."
         gt_caption = s["conversations"][1]["value"]
         gen = generate_answer(model, tokenizer, image_processor, image,
@@ -531,6 +550,7 @@ def eval_sharegpt4v(model, tokenizer, image_processor, data_root, n_samples,
 
         results.append({
             "idx": i + 1, "image": img_path,
+            "image_saved_path": str(img_save_path),
             "gt_caption_preview": gt_caption[:200],
             "gt_length_words": len(gt_caption.split()),
             "generated": gen, "gen_length_words": word_count,
@@ -610,14 +630,16 @@ def main():
                     help="禁用 ckpt-NNNN 不可用时 fallback 到上一个可用 checkpoint")
     args = ap.parse_args()
 
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
     # 自动 resolve checkpoint
     if args.no_auto_fallback:
         ckpt_dir = args.ckpt_dir
     else:
         ckpt_dir = resolve_checkpoint(args.ckpt_dir)
+
+    # 按 checkpoint 名建子目录,避免不同 ckpt 互相覆盖
+    out_dir = Path(args.out_dir) / Path(ckpt_dir).name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[out_dir] {out_dir}")
 
     model, tokenizer, image_processor = load_model(ckpt_dir, args.processor_dir)
     num_image_tokens = compute_num_image_tokens(model.config)
@@ -633,11 +655,14 @@ def main():
 
     all_results = {}
 
+    images_root = out_dir / "images"
+
     if "llava_instruct" not in args.skip:
         all_results["llava_instruct"] = eval_llava_instruct(
             model, tokenizer, image_processor, args.stage2_data_root,
             args.n_per_task, num_image_tokens,
             out_dir / "baseline_llava_vqa.json", coco_loader,
+            images_root / "llava_instruct",
         )
 
     if "textvqa" not in args.skip:
@@ -645,6 +670,7 @@ def main():
             model, tokenizer, image_processor, args.stage2_data_root,
             args.n_per_task, num_image_tokens,
             out_dir / "baseline_textvqa.json",
+            images_root / "textvqa",
         )
 
     if "refcoco" not in args.skip:
@@ -652,6 +678,7 @@ def main():
             model, tokenizer, image_processor, args.stage2_data_root,
             args.n_per_task, num_image_tokens,
             out_dir / "baseline_refcoco.json", coco_loader,
+            images_root / "refcoco",
         )
 
     if "sharegpt4v" not in args.skip:
@@ -659,13 +686,18 @@ def main():
             model, tokenizer, image_processor, args.stage2_data_root,
             args.n_per_task, num_image_tokens,
             out_dir / "baseline_sharegpt4v.json", coco_loader,
+            images_root / "sharegpt4v",
         )
 
     if coco_loader:
         coco_loader.close()
 
     # 总结
-    summary = {"n_per_task": args.n_per_task, "tasks": {}}
+    summary = {
+        "ckpt_dir": str(ckpt_dir),
+        "n_per_task": args.n_per_task,
+        "tasks": {},
+    }
     for task, res in all_results.items():
         if res:
             summary["tasks"][task] = res["metrics"]
