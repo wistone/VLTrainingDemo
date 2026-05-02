@@ -253,6 +253,44 @@ def find_latest_ckpt(output_dir: Path):
 
 
 # ============================================================================
+# Stage 1 checkpoint 自动 resolve（应对 save_total_limit 删旧 ckpt 的场景）
+# ============================================================================
+
+def resolve_stage1_ckpt(ckpt_arg: str) -> str:
+    """检查 stage1_ckpt 是否真实存在且包含 model.safetensors。
+
+    Stage 1 训练期间 save_total_limit=2 会持续删旧 checkpoint，用户脚本里写的
+    `--stage1_ckpt .../checkpoint-XXXX` 经常过期。这个 helper 仿照 baseline_eval
+    的做法：路径是 checkpoint-NNNN 形式时自动 fallback 到同目录下最新可用的。
+    """
+    ckpt_path = Path(ckpt_arg)
+    sft = ckpt_path / "model.safetensors"
+
+    if sft.exists() and sft.stat().st_size > 1e9:
+        return str(ckpt_path)
+
+    # 不可用：找同目录最新可用 checkpoint
+    if ckpt_path.parent.exists() and ckpt_path.name.startswith("checkpoint-"):
+        all_ckpts = sorted(
+            (p for p in ckpt_path.parent.glob("checkpoint-*") if p.is_dir()),
+            key=lambda p: int(p.name.split("-")[1]),
+            reverse=True,
+        )
+        for c in all_ckpts:
+            if (c / "model.safetensors").exists() \
+               and (c / "model.safetensors").stat().st_size > 1e9:
+                print(f"[warn] {ckpt_path.name} 不可用（已被 save_total_limit 删除？）")
+                print(f"       自动 fallback 到 {c.name}")
+                return str(c)
+
+    raise FileNotFoundError(
+        f"找不到可用 Stage 1 checkpoint。{ckpt_path} 下无 model.safetensors，"
+        f"且同目录其他 checkpoint 也不可用。可用 ls 看一下 "
+        f"{ckpt_path.parent} 现有哪些 checkpoint-*。"
+    )
+
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -304,6 +342,9 @@ def main():
     args = parse_args()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 自动 resolve Stage 1 ckpt（save_total_limit 可能已删除指定的 checkpoint-XXXX）
+    args.stage1_ckpt = resolve_stage1_ckpt(args.stage1_ckpt)
 
     # ----- tokenizer / image_processor -----
     proc_dir = args.processor_dir or args.stage1_ckpt
