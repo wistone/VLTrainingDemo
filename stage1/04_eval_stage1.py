@@ -107,12 +107,12 @@ def load_model(ckpt_dir, processor_dir=None):
 
     model = model.to(device).eval()
 
-    # tokenizer 中间 checkpoint 都有
-    tokenizer = AutoTokenizer.from_pretrained(ckpt_dir)
-
-    # image_processor 中间 checkpoint 没存，从指定目录加载
+    # 中间 checkpoint 既不存 tokenizer 也不存 image_processor
+    # （HF Trainer 默认行为：未传 processing_class 时 intermediate checkpoint 只有 model + 训练状态）
+    # 所以两者都从 processor_dir（通常是 stage1_init）加载
     proc_dir = processor_dir or ckpt_dir
-    print(f"加载 image_processor from: {proc_dir}")
+    print(f"加载 tokenizer + image_processor from: {proc_dir}")
+    tokenizer = AutoTokenizer.from_pretrained(proc_dir)
     image_processor = AutoImageProcessor.from_pretrained(proc_dir)
 
     return model, tokenizer, image_processor

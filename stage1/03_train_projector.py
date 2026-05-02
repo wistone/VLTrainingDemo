@@ -295,12 +295,20 @@ def main():
         optim="adamw_torch",
     )
 
-    trainer = Trainer(
+    # 把 tokenizer 传给 Trainer → 每个中间 checkpoint 也会存 tokenizer 文件，
+    # 方便从 ckpt 直接 resume 或做 eval（无需额外指定 processor_dir）。
+    # HF transformers ≥4.46 用 processing_class；旧版用 tokenizer。
+    trainer_kwargs = dict(
         model=model,
         args=training_args,
         train_dataset=dataset,
         data_collator=collator,
     )
+    try:
+        trainer = Trainer(**trainer_kwargs, processing_class=tokenizer)
+    except TypeError:
+        # 旧版 transformers fallback
+        trainer = Trainer(**trainer_kwargs, tokenizer=tokenizer)
 
     # 续训
     last_ckpt = find_latest_checkpoint(output_dir)
