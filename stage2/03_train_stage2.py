@@ -289,7 +289,8 @@ def parse_args():
     ap.add_argument("--save_steps",    type=int, default=500)
     ap.add_argument("--logging_steps", type=int, default=10)
     ap.add_argument("--save_total_limit", type=int, default=2)
-    ap.add_argument("--num_workers", type=int, default=4)
+    ap.add_argument("--num_workers", type=int, default=2,
+                    help="DataLoader worker 数。Colab T4 一般 vCPU 只有 2，A100 有 12。")
     ap.add_argument("--report_to",   default="wandb",
                     choices=["wandb", "none", "tensorboard"])
 

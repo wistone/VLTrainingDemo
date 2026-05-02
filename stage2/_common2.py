@@ -162,12 +162,25 @@ class LlavaInstructTaskDataset(Dataset):
 
 
 class RefCOCOTaskDataset(Dataset):
-    """RefCOCO grounding — 把 (ref, bbox) 转成 (Q="Where is X?", A=<box>...)。"""
+    """RefCOCO grounding — 把 (ref, bbox) 转成 (Q="Where is X?", A=<box>...)。
+
+    适配 lmms-lab/RefCOCO 字段：
+      image   - PIL/bytes
+      answer  - 真正的 referring expression（"the man in red"），不是 question！
+                lmms-lab 把任务设计成"对图中圈出的区域写描述"，所以 question 是
+                通用 prompt，answer 才是描述/ref。
+      bbox    - 目标 bounding box [x, y, w, h] (COCO) 或 [x1,y1,x2,y2]
+    """
     def __init__(self, hf_dataset, coco_loader: Optional[CocoZipLoader] = None,
                  limit=None):
         self.ds = hf_dataset
         self.indices = list(range(len(hf_dataset)))[:limit] if limit else list(range(len(hf_dataset)))
         self.coco_loader = coco_loader
+
+        # 启动时打印字段，便于以后字段命名又变化时快速诊断
+        if len(hf_dataset) > 0:
+            keys = list(hf_dataset[0].keys())
+            print(f"  [refcoco] HF dataset 字段: {keys}")
 
     def __len__(self):
         return len(self.indices)
@@ -189,16 +202,19 @@ class RefCOCOTaskDataset(Dataset):
 
     def _extract_ref(self, s) -> Optional[str]:
         # 字段命名因 HF repo 而异，做宽松匹配
-        for key in ["sentences", "sentence", "ref", "referring_expression", "caption"]:
+        # lmms-lab/RefCOCO 用 'answer' 字段存 ref expression（而不是 question——question 是通用 prompt）
+        # 其他 RefCOCO mirrors 可能用 sentences/sentence/ref 等
+        for key in ["answer", "sentences", "sentence", "ref",
+                    "referring_expression", "caption"]:
             v = s.get(key)
             if isinstance(v, list) and v:
                 v = v[0]
                 if isinstance(v, dict):
                     v = v.get("sent") or v.get("raw") or v.get("text")
-                if isinstance(v, str):
-                    return v
-            elif isinstance(v, str) and v:
-                return v
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+            elif isinstance(v, str) and v.strip():
+                return v.strip()
         return None
 
     def _extract_bbox(self, s, im_size) -> Optional[Tuple[float, float, float, float]]:
@@ -212,16 +228,23 @@ class RefCOCOTaskDataset(Dataset):
         return tuple(bbox)
 
     def __getitem__(self, idx):
-        for tries in range(5):  # 字段缺失时换样本
+        last_failure = "unknown"
+        for tries in range(20):  # 字段缺失时换样本
             i = self.indices[(idx + tries) % len(self.indices)]
             s = self.ds[i]
             img_pair = self._extract_image_and_size(s)
+            if img_pair is None:
+                last_failure = f"image (sample keys: {list(s.keys())})"
+                continue
             ref = self._extract_ref(s)
-            if img_pair is None or ref is None:
+            if ref is None:
+                last_failure = f"ref (sample keys: {list(s.keys())}, " \
+                               f"answer preview: {str(s.get('answer'))[:80]})"
                 continue
             image, im_size = img_pair
             bbox = self._extract_bbox(s, im_size)
             if bbox is None:
+                last_failure = f"bbox (raw bbox field: {s.get('bbox')})"
                 continue
 
             conversations = [
@@ -234,7 +257,10 @@ class RefCOCOTaskDataset(Dataset):
                 "task": "refcoco",
                 "bbox": bbox,  # 用于后续 eval
             }
-        raise RuntimeError(f"RefCOCO: idx={idx} 周围 5 个样本都解析失败")
+        raise RuntimeError(
+            f"RefCOCO: idx={idx} 连续 20 个样本解析失败。"
+            f"最后失败原因: {last_failure}"
+        )
 
 
 class ShareGPT4VTaskDataset(Dataset):
