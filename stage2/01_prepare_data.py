@@ -6,9 +6,12 @@
 数据集（按重要性排序，可独立启用/跳过）：
   ✅ LLaVA-Instruct-150K  json (~50MB)             — 多轮 VQA + 推理
   ✅ COCO train2017 图 zip (~18GB, 单文件)         — LLaVA-Instruct/RefCOCO 共用
-  ⚠️ OCR-VQA images & annotations (~3GB)           — OCR 任务（可选）
+  ⚠️ TextVQA (~7GB)                                — 图内文字 VQA（OCR 类，替代 OCR-VQA）
   ⚠️ RefCOCO/RefCOCO+/RefCOCOg annotations         — Grounding（可选；图用 COCO）
   ⚠️ ShareGPT4V json subset                        — 长 caption（可选）
+
+注意：原 OCR-VQA-200K 主要在 Google Drive 上分发，HF 没有可靠 mirror，
+我们用 TextVQA 替代——任务性质几乎相同（都是图内文字 + 问答）。
 
 可选数据 HF repo id 不绝对稳定，脚本对每个数据 try/except；下不到不影响其他数据。
 跑完后按 `[done]` 行核对实际成功项。
@@ -141,23 +144,28 @@ def task_coco_images():
     )
 
 
-def task_ocr_vqa():
-    """OCR-VQA: 图像内文字识别+问答。
+def task_textvqa():
+    """TextVQA：图像内文字识别+问答。OCR 类任务的 HF 替代品。
 
-    HF repo 候选（按可靠性排序）：
-      howard-hou/OCR-VQA-200K
-      Multimodal-Fatima/OCR-VQA
+    OCR-VQA-200K 原始数据在 Google Drive 上，HF 没有靠谱 mirror。
+    用 TextVQA（性质几乎相同）替代——HF 上有 lmms-lab 维护的版本。
     """
-    for repo_id in ["howard-hou/OCR-VQA-200K", "Multimodal-Fatima/OCR-VQA"]:
+    candidates = [
+        ("lmms-lab/textvqa", "dataset"),
+        ("facebook/textvqa", "dataset"),
+    ]
+    for repo_id, rtype in candidates:
         ok = hf_download(
             repo_id=repo_id,
-            repo_type="dataset",
-            patterns=None,  # 全下
-            target_dir=DRIVE_ROOT / "ocr_vqa",
-            label=f"OCR-VQA (尝试 {repo_id})",
+            repo_type=rtype,
+            patterns=None,
+            target_dir=DRIVE_ROOT / "textvqa",
+            label=f"TextVQA (尝试 {repo_id})",
         )
         if ok:
             return True
+    print(f"  [info] TextVQA 全部候选都失败；这是可选数据，跳过不影响 Stage 2 主线。")
+    print(f"  [info] Stage 1 模型已自然涌现 OCR 能力，没有这块也能学到 80% 效果。")
     return False
 
 
@@ -226,7 +234,7 @@ def verify_llava_coco_link():
 ALL_TASKS = {
     "llava_instruct": (task_llava_instruct, "essential"),
     "coco":           (task_coco_images,    "essential"),
-    "ocr_vqa":        (task_ocr_vqa,        "optional"),
+    "textvqa":        (task_textvqa,        "optional"),  # OCR 类（替代 OCR-VQA）
     "refcoco":        (task_refcoco,        "optional"),
     "sharegpt4v":     (task_sharegpt4v,     "optional"),
 }

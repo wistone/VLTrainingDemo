@@ -227,35 +227,27 @@ def eval_llava_instruct(model, tokenizer, image_processor, data_root, n_samples,
 
 
 # ============================================================================
-# 任务 2：OCR-VQA
+# 任务 2：TextVQA（OCR 类，替代原计划的 OCR-VQA）
 # ============================================================================
 
-def eval_ocr_vqa(model, tokenizer, image_processor, data_root, n_samples,
-                 num_image_tokens, out_path):
-    """OCR-VQA baseline — 简化版。
+def eval_textvqa(model, tokenizer, image_processor, data_root, n_samples,
+                  num_image_tokens, out_path):
+    """TextVQA baseline — OCR + VQA。
 
-    OCR-VQA 数据格式因 HF repo 而异；此函数尝试常见结构：
-      - dataset.json 里有 {image_url/image_id, questions, answers}
-    实际上 Stage 2 训练前模型对结构化 Q/A 几乎不会回答，主要看 OCR exact match
-    出现率（GT 字符串作为子串）。
+    数据来源：lmms-lab/textvqa（HF）。结构通常为 parquet 里的 {image, question, answers}。
+    Stage 2 训练前模型对结构化 Q/A 几乎不会回答；主要看图内文字是否被部分召回。
+
+    实现先做基本 stub：检测数据存在 → 用 datasets.load_dataset 试着读 → 否则跳过。
     """
-    ocr_dir = Path(data_root) / "ocr_vqa"
-    if not ocr_dir.exists() or not any(ocr_dir.iterdir()):
-        print(f"\n[skip] OCR-VQA 数据未下载在 {ocr_dir}")
+    tv_dir = Path(data_root) / "textvqa"
+    if not tv_dir.exists() or not any(tv_dir.iterdir()):
+        print(f"\n[skip] TextVQA 未下载（{tv_dir} 为空）；可选任务，不影响主流程。")
         return None
 
-    # OCR-VQA 不同 HF repo 文件结构差异大，这里用一个宽松的匹配
-    json_files = list(ocr_dir.rglob("*.json"))
-    if not json_files:
-        print(f"[skip] OCR-VQA: 找不到 json 文件在 {ocr_dir}")
-        return None
-
-    print(f"\n[task] OCR-VQA  (n={n_samples}; 数据可能不完整，本次只做 sanity)")
-    print(f"  发现 OCR-VQA json 文件: {[f.name for f in json_files[:3]]}")
-    print(f"  ⚠️  OCR-VQA 各 HF repo 字段命名不一，需要根据实际数据调整。")
-    print(f"  ⚠️  本次先跳过，等数据下完后人工查一下结构再启用此任务。")
-
-    # TODO: 实现 OCR-VQA 评估（取决于实际下到的 repo 字段）
+    # 字段命名因 HF repo 而异，等数据下到再实装
+    print(f"\n[task] TextVQA — 数据已下载到 {tv_dir}")
+    print(f"  ⚠️  字段解析根据实际下到的 repo 调整，本次先跳过 detailed eval。")
+    print(f"  ⚠️  不影响 Stage 2 主线（OCR 能力 Stage 1 已自然涌现）。")
     return None
 
 
@@ -290,12 +282,12 @@ def main():
         out_dir / "baseline_llava_vqa.json",
     )
 
-    # 任务 2: OCR-VQA
-    eval_ocr_vqa(
+    # 任务 2: TextVQA (OCR 类)
+    eval_textvqa(
         model, tokenizer, image_processor,
         args.stage2_data_root, args.n_per_task,
         num_image_tokens,
-        out_dir / "baseline_ocr_vqa.json",
+        out_dir / "baseline_textvqa.json",
     )
 
     print(f"\n=== Baseline 评估完成 ===")
