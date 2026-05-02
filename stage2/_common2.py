@@ -28,26 +28,46 @@ BBOX_PRECISION = 3   # bbox 坐标小数位
 # ============================================================================
 
 class CocoZipLoader:
-    """从 COCO train2017.zip 直接读图，避免解压 30GB。"""
+    """从 COCO train2017.zip 直接读图，避免解压 30GB。
+
+    多进程安全（DataLoader num_workers > 0 兼容）：
+      - __init__ 在主进程读一次文件列表（set 是 fork-safe），随即关闭 zip handle
+      - ZipFile 对象不持有；每个 worker 进程通过 _get_zip() 懒加载自己的
+      - 不能直接 share ZipFile 跨 worker，否则文件描述符并发读会 CRC 错误
+        （zipfile.BadZipFile: Bad CRC-32 ... 错误的真正原因）
+    """
     def __init__(self, zip_path):
-        self.zip = zipfile.ZipFile(zip_path)
-        self.names = set(self.zip.namelist())
+        self.zip_path = str(zip_path)
+        # 主进程一次性读出文件列表（set 是 fork-safe，所有 worker 共享）
+        with zipfile.ZipFile(self.zip_path) as zf:
+            self.names = set(zf.namelist())
+        # 每进程独立 cache：pid -> ZipFile
+        self._zip_cache = {}
+
+    def _get_zip(self) -> zipfile.ZipFile:
+        import os
+        pid = os.getpid()
+        if pid not in self._zip_cache:
+            self._zip_cache[pid] = zipfile.ZipFile(self.zip_path)
+        return self._zip_cache[pid]
 
     def open(self, image_filename) -> Image.Image:
         full_path = f"train2017/{image_filename}"
         if full_path not in self.names:
             raise FileNotFoundError(image_filename)
-        with self.zip.open(full_path) as f:
+        with self._get_zip().open(full_path) as f:
             return Image.open(io.BytesIO(f.read())).convert("RGB")
 
     def has(self, image_filename) -> bool:
         return f"train2017/{image_filename}" in self.names
 
     def close(self):
-        try:
-            self.zip.close()
-        except Exception:
-            pass
+        for zf in self._zip_cache.values():
+            try:
+                zf.close()
+            except Exception:
+                pass
+        self._zip_cache.clear()
 
 
 # ============================================================================
