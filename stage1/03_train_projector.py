@@ -34,12 +34,29 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 from transformers import (
+    AutoImageProcessor,
     AutoTokenizer,
     LlavaForConditionalGeneration,
-    SiglipImageProcessor,
     Trainer,
     TrainingArguments,
 )
+
+
+def print_gpu_mem_and_recommend(batch_size, num_image_tokens):
+    """打印 GPU 显存并校准 batch_size 是否安全。"""
+    if not torch.cuda.is_available():
+        print("[GPU] no CUDA")
+        return
+    props = torch.cuda.get_device_properties(0)
+    total_gb = props.total_memory / 1e9
+    name = props.name
+    print(f"[GPU] {name}, {total_gb:.1f}GB")
+    # logits fp32 占用估算（vocab=152K for Qwen2.5）
+    seq_estimate = num_image_tokens + 64  # 假设 caption ~64 token
+    logits_gb = batch_size * seq_estimate * 152064 * 4 / 1e9
+    print(f"[mem] 估算 logits fp32 张量: {logits_gb:.2f}GB（batch={batch_size}, seq~{seq_estimate}, vocab=152K）")
+    if total_gb < 50 and batch_size > 8:
+        print(f"[warn] 40GB 卡上 batch>{8} 容易 OOM。建议 --batch_size 8 --grad_accum 4")
 
 IGNORE_INDEX = -100
 
@@ -180,8 +197,10 @@ def main():
     ap.add_argument("--model_init_dir", required=True)
     ap.add_argument("--data_root", required=True, help="包含 images/ 和 blip_laion_cc_sbu_558k.json")
     ap.add_argument("--output_dir", required=True)
-    ap.add_argument("--batch_size", type=int, default=32)
-    ap.add_argument("--grad_accum", type=int, default=1)
+    # 默认 batch=8 / grad_accum=4 → 等效 batch 32，且能在 40GB A100 上跑
+    # 80GB 卡可改为 --batch_size 32 --grad_accum 1 提速
+    ap.add_argument("--batch_size", type=int, default=8)
+    ap.add_argument("--grad_accum", type=int, default=4)
     ap.add_argument("--num_epochs", type=int, default=1)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--warmup_ratio", type=float, default=0.03)
@@ -201,9 +220,10 @@ def main():
     model = LlavaForConditionalGeneration.from_pretrained(
         args.model_init_dir,
         torch_dtype=torch.bfloat16,
+        attn_implementation="sdpa",  # 比 eager 省 ~50% attention 激活
     )
     tokenizer = AutoTokenizer.from_pretrained(args.model_init_dir)
-    image_processor = SiglipImageProcessor.from_pretrained(args.model_init_dir)
+    image_processor = AutoImageProcessor.from_pretrained(args.model_init_dir)
 
     # 冻结
     freeze_except_projector(model)
@@ -218,6 +238,9 @@ def main():
     print(f"\nnum_image_tokens = {num_image_tokens}  "
           f"(image_size={vc.image_size}, patch={vc.patch_size}, "
           f"strategy={model.config.vision_feature_select_strategy})")
+
+    print()
+    print_gpu_mem_and_recommend(args.batch_size, num_image_tokens)
 
     # 数据集
     # LLaVA-Pretrain 的 zip 解压后 00xxx 子目录直接在 data_root 下，没有 images/ 这层
