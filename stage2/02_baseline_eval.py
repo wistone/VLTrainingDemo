@@ -1,4 +1,4 @@
-"""Stage 2 训练前 baseline 评估 — 覆盖所有任务类型。
+"""Stage 2 训练前 baseline 评估 — 覆盖所有任务类型，支持两种 prompt 模式。
 
 目的：训练前后对比，量化 Stage 2 的提升。
 
@@ -10,19 +10,31 @@
 
 每任务 30–50 样本，结果存 json，留作训练后 A/B 对比。
 
-Stage 1 模型只见过 <image>+caption 极简输入，所以：
-  - VQA 关键词匹配可能 ~20–30%（识别主体，但答非所问）
-  - OCR exact match 应该有些（Stage 1 已涌现 OCR 能力）
-  - Grounding 必为 ~0%（没见过 bbox 格式）
-  - 长 caption 平均 5–15 词（远短于 SGPT4V 的 50+）
+== 两种 prompt 模式 ==
 
-用法：
+  --prompt_mode caption_only (默认)
+    只喂 <image> × 729，不带 question 文本。让模型按 Stage 1 训练方式生成 caption，
+    再跟各任务 GT 做关键词/子串/长度对比。**适合 Stage 1 baseline**——因为 Stage 1
+    模型从没见过 question 文本，with_question 模式会全部生成空字符串。
+    对 RefCOCO 这种必须看到 bbox 格式才能评的任务，结果仍然是 0（合理）。
+    输出文件后缀: _caption
+
+  --prompt_mode with_question
+    喂 <image> × 729 + question 文本，期望模型按 Q&A 回答。**Stage 2 训完后用**——
+    模型学会 chat format 后能针对性回答而不是 caption。
+    输出文件后缀: _chat
+
+== 用法 ==
+
+  Stage 1 baseline (caption-only, 默认):
     python stage2/02_baseline_eval.py \\
         --ckpt_dir /content/drive/MyDrive/qwenvl3/stage1_ckpt_v3/checkpoint-XXXX \\
         --processor_dir /content/drive/MyDrive/qwenvl3/stage1_init \\
         --stage2_data_root /content/drive/MyDrive/qwenvl3/data/stage2 \\
-        --out_dir /content/drive/MyDrive/qwenvl3/eval_baseline \\
         --n_per_task 40
+
+  Stage 2 后正式 eval (with_question):
+    python stage2/02_baseline_eval.py ... --prompt_mode with_question
 """
 import argparse
 import io
@@ -132,6 +144,19 @@ def generate_answer(model, tokenizer, image_processor, image, question,
     ).strip()
 
 
+def prompt_for_mode(question, prompt_mode):
+    """根据 prompt_mode 决定喂给模型的文本。
+
+    caption_only: 只喂 <image> × N，让模型按 Stage 1 训练方式生成 caption。
+                  适合 Stage 1 baseline，因为模型只见过这种格式。
+    with_question: 喂 <image> × N + question，期望模型按 Q&A 方式回答。
+                   适合 Stage 2 训完后用，模型已学会 chat format。
+    """
+    if prompt_mode == "caption_only":
+        return ""
+    return question
+
+
 # ============================================================================
 # 通用 metric helpers
 # ============================================================================
@@ -215,7 +240,8 @@ def iou(a, b):
 # ============================================================================
 
 def eval_llava_instruct(model, tokenizer, image_processor, data_root, n_samples,
-                        num_image_tokens, out_path, coco_loader, image_dir):
+                        num_image_tokens, out_path, coco_loader, image_dir,
+                        prompt_mode="caption_only"):
     json_path = Path(data_root) / "llava_instruct" / "llava_instruct_150k.json"
     if not json_path.exists():
         print(f"[skip] LLaVA-Instruct: {json_path} 不存在")
@@ -245,7 +271,8 @@ def eval_llava_instruct(model, tokenizer, image_processor, data_root, n_samples,
         question = s["conversations"][0]["value"].replace("<image>", "").strip()
         gt_answer = s["conversations"][1]["value"]
         gen = generate_answer(model, tokenizer, image_processor, image,
-                              question, num_image_tokens)
+                              prompt_for_mode(question, prompt_mode),
+                              num_image_tokens)
         rate = keyword_match_rate(gt_answer, gen)
         if rate is not None:
             rates.append(rate)
@@ -280,7 +307,8 @@ def eval_llava_instruct(model, tokenizer, image_processor, data_root, n_samples,
 # ============================================================================
 
 def eval_textvqa(model, tokenizer, image_processor, data_root, n_samples,
-                  num_image_tokens, out_path, image_dir):
+                  num_image_tokens, out_path, image_dir,
+                  prompt_mode="caption_only"):
     """TextVQA — 用 datasets 库读 parquet。如果 repo 字段不一致会自动跳过。"""
     tv_dir = Path(data_root) / "textvqa"
     if not tv_dir.exists() or not any(tv_dir.iterdir()):
@@ -329,7 +357,9 @@ def eval_textvqa(model, tokenizer, image_processor, data_root, n_samples,
         img_save_path = image_dir / f"{i+1:03d}.jpg"
         image.save(img_save_path)
         gen = generate_answer(model, tokenizer, image_processor, image,
-                              question, num_image_tokens, max_new_tokens=40)
+                              prompt_for_mode(question, prompt_mode),
+                              num_image_tokens,
+                              max_new_tokens=120 if prompt_mode == "caption_only" else 40)
         match = substring_match(gt_answer, gen)
         matches.append(match)
         results.append({
@@ -359,7 +389,8 @@ def eval_textvqa(model, tokenizer, image_processor, data_root, n_samples,
 # ============================================================================
 
 def eval_refcoco(model, tokenizer, image_processor, data_root, n_samples,
-                 num_image_tokens, out_path, coco_loader, image_dir):
+                 num_image_tokens, out_path, coco_loader, image_dir,
+                 prompt_mode="caption_only"):
     """RefCOCO grounding — 输入 ref expression，期望模型输出 bbox。
 
     Stage 1 没见过 bbox 格式，预期：
@@ -442,7 +473,9 @@ def eval_refcoco(model, tokenizer, image_processor, data_root, n_samples,
         image.save(img_save_path)
         question = f"Where is {ref}? Answer with a bounding box."
         gen = generate_answer(model, tokenizer, image_processor, image,
-                              question, num_image_tokens, max_new_tokens=40)
+                              prompt_for_mode(question, prompt_mode),
+                              num_image_tokens,
+                              max_new_tokens=120 if prompt_mode == "caption_only" else 40)
         pred_box = parse_bbox(gen)
         sample_iou = 0.0
         if pred_box is not None:
@@ -478,7 +511,8 @@ def eval_refcoco(model, tokenizer, image_processor, data_root, n_samples,
 # ============================================================================
 
 def eval_sharegpt4v(model, tokenizer, image_processor, data_root, n_samples,
-                    num_image_tokens, out_path, coco_loader, image_dir):
+                    num_image_tokens, out_path, coco_loader, image_dir,
+                    prompt_mode="caption_only"):
     sg_dir = Path(data_root) / "sharegpt4v"
     if not sg_dir.exists() or not any(sg_dir.iterdir()):
         print(f"\n[skip] ShareGPT4V: 数据未下载 ({sg_dir})")
@@ -537,7 +571,8 @@ def eval_sharegpt4v(model, tokenizer, image_processor, data_root, n_samples,
         question = "Describe this image in detail."
         gt_caption = s["conversations"][1]["value"]
         gen = generate_answer(model, tokenizer, image_processor, image,
-                              question, num_image_tokens, max_new_tokens=120)
+                              prompt_for_mode(question, prompt_mode),
+                              num_image_tokens, max_new_tokens=120)
 
         word_count = len(gen.split())
         lengths.append(word_count)
@@ -628,6 +663,11 @@ def main():
                     help="跳过指定任务")
     ap.add_argument("--no_auto_fallback", action="store_true",
                     help="禁用 ckpt-NNNN 不可用时 fallback 到上一个可用 checkpoint")
+    ap.add_argument("--prompt_mode", default="caption_only",
+                    choices=["caption_only", "with_question"],
+                    help="caption_only (默认 / 适合 Stage 1 baseline): "
+                         "只喂图，让模型按 Stage 1 训练方式生成 caption，再跟各任务 GT 做匹配。"
+                         "with_question (Stage 2 后用): 喂图 + 完整问题文本，模型应按 Q&A 回答。")
     args = ap.parse_args()
 
     # 自动 resolve checkpoint
@@ -656,37 +696,45 @@ def main():
     all_results = {}
 
     images_root = out_dir / "images"
+    mode = args.prompt_mode
+    # 文件名后缀，避免不同模式相互覆盖
+    suffix = "_caption" if mode == "caption_only" else "_chat"
+    print(f"[mode] {mode}  (输出文件后缀: {suffix})")
 
     if "llava_instruct" not in args.skip:
         all_results["llava_instruct"] = eval_llava_instruct(
             model, tokenizer, image_processor, args.stage2_data_root,
             args.n_per_task, num_image_tokens,
-            out_dir / "baseline_llava_vqa.json", coco_loader,
+            out_dir / f"baseline_llava_vqa{suffix}.json", coco_loader,
             images_root / "llava_instruct",
+            prompt_mode=mode,
         )
 
     if "textvqa" not in args.skip:
         all_results["textvqa"] = eval_textvqa(
             model, tokenizer, image_processor, args.stage2_data_root,
             args.n_per_task, num_image_tokens,
-            out_dir / "baseline_textvqa.json",
+            out_dir / f"baseline_textvqa{suffix}.json",
             images_root / "textvqa",
+            prompt_mode=mode,
         )
 
     if "refcoco" not in args.skip:
         all_results["refcoco"] = eval_refcoco(
             model, tokenizer, image_processor, args.stage2_data_root,
             args.n_per_task, num_image_tokens,
-            out_dir / "baseline_refcoco.json", coco_loader,
+            out_dir / f"baseline_refcoco{suffix}.json", coco_loader,
             images_root / "refcoco",
+            prompt_mode=mode,
         )
 
     if "sharegpt4v" not in args.skip:
         all_results["sharegpt4v"] = eval_sharegpt4v(
             model, tokenizer, image_processor, args.stage2_data_root,
             args.n_per_task, num_image_tokens,
-            out_dir / "baseline_sharegpt4v.json", coco_loader,
+            out_dir / f"baseline_sharegpt4v{suffix}.json", coco_loader,
             images_root / "sharegpt4v",
+            prompt_mode=mode,
         )
 
     if coco_loader:
@@ -696,6 +744,7 @@ def main():
     summary = {
         "ckpt_dir": str(ckpt_dir),
         "n_per_task": args.n_per_task,
+        "prompt_mode": mode,
         "tasks": {},
     }
     for task, res in all_results.items():
@@ -703,7 +752,7 @@ def main():
             summary["tasks"][task] = res["metrics"]
         else:
             summary["tasks"][task] = "skipped/failed"
-    with open(out_dir / "baseline_summary.json", "w") as f:
+    with open(out_dir / f"baseline_summary{suffix}.json", "w") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
     print("\n" + "=" * 60)
