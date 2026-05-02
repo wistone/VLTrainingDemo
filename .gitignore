@@ -42,3 +42,5 @@ wandb_*
 .vscode/
 *.swp
 *~
+
+holdout_images_local/
