@@ -110,17 +110,50 @@ def main():
     # 拿到内部组件（兼容新旧 API）
     lm_module, vt_module, _ = get_components(model)
 
-    # 视觉塔权重
-    missing, unexpected = vt_module.load_state_dict(
+    # ===== 视觉塔权重 =====
+    # 新 transformers: target inner.vision_tower 是 SiglipVisionModel（外壳），
+    #                  内部还有 .vision_model = SiglipVisionTransformer
+    # source full_siglip.vision_model 直接就是 SiglipVisionTransformer
+    # 所以装到 vt_module.vision_model（如果有）才能 key 对齐；旧 API 直接装 vt_module
+    target_vt = getattr(vt_module, "vision_model", vt_module)
+    missing, unexpected = target_vt.load_state_dict(
         vision_model.state_dict(), strict=False
     )
     print(f"  vision_tower: missing={len(missing)} unexpected={len(unexpected)}")
+    if missing or unexpected:
+        raise RuntimeError(
+            f"❌ vision_tower 权重未完全加载！missing={len(missing)} unexpected={len(unexpected)}\n"
+            f"  示例 missing: {list(missing)[:3]}\n"
+            f"  示例 unexpected: {list(unexpected)[:3]}\n"
+            f"  这意味着 SigLIP 预训练权重没复制进去，模型实际是随机初始化。"
+        )
 
-    # 文本模型权重
-    missing, unexpected = lm_module.load_state_dict(
-        text_model.state_dict(), strict=False
-    )
+    # ===== 文本模型权重 =====
+    # 新 transformers: target inner.language_model 是 Qwen2Model（不带 LM head）
+    # source text_model 是 Qwen2ForCausalLM（带 .model 子模块 + 顶层 lm_head）
+    # 用 text_model.model 拿到内部 Qwen2Model
+    text_inner_sd = text_model.model.state_dict() if hasattr(text_model, "model") else text_model.state_dict()
+    missing, unexpected = lm_module.load_state_dict(text_inner_sd, strict=False)
     print(f"  language_model: missing={len(missing)} unexpected={len(unexpected)}")
+    if missing or unexpected:
+        raise RuntimeError(
+            f"❌ language_model 权重未完全加载！missing={len(missing)} unexpected={len(unexpected)}\n"
+            f"  示例 missing: {list(missing)[:3]}\n"
+            f"  示例 unexpected: {list(unexpected)[:3]}"
+        )
+
+    # ===== LM head =====
+    # 新 transformers 把 lm_head 放在 LlavaForConditionalGeneration 顶层
+    # Qwen2.5 用 tied embeddings，复制 embed_tokens 后 lm_head 通常会自动同步；
+    # 但 Llava 构造时可能没继承这个 tying，所以显式复制一次更稳
+    if hasattr(model, "lm_head") and hasattr(text_model, "lm_head"):
+        model.lm_head.load_state_dict(text_model.lm_head.state_dict(), strict=True)
+        print(f"  lm_head: 已加载（来自 text_model.lm_head）")
+
+    # 验证：抽一层 LLM 权重看是不是真的复制成功了（非随机）
+    sample_w = lm_module.layers[0].self_attn.q_proj.weight
+    print(f"  language_model 验证: layer-0 q_proj weight std={sample_w.float().std().item():.4f} "
+          f"(预训练值典型 ~0.02；若 ~0.04 接近随机)")
 
     # ===== 关键修复：替换默认 projector 为带 LayerNorm 的版本 =====
     # Qwen2.5 + LLaVA 必须做这步，否则 projector 会被训练放大到 1000× norm
