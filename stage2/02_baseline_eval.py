@@ -561,6 +561,37 @@ def eval_sharegpt4v(model, tokenizer, image_processor, data_root, n_samples,
     return summary
 
 
+def resolve_checkpoint(ckpt_arg):
+    """检查 ckpt_dir 是否真的可用（model.safetensors 存在且 > 1GB）。
+    如果不可用且路径形如 .../checkpoint-NNNN，自动 fallback 到同目录最新的可用 checkpoint。
+    避免 Drive 同步滞后问题。
+    """
+    ckpt_path = Path(ckpt_arg)
+    sft = ckpt_path / "model.safetensors"
+
+    if sft.exists() and sft.stat().st_size > 1e9:
+        return str(ckpt_path)
+
+    # 不可用：找同目录最新可用 checkpoint
+    if ckpt_path.parent.name and ckpt_path.name.startswith("checkpoint-"):
+        all_ckpts = sorted(
+            (p for p in ckpt_path.parent.glob("checkpoint-*") if p.is_dir()),
+            key=lambda p: int(p.name.split("-")[1]),
+            reverse=True,
+        )
+        for c in all_ckpts:
+            sft_c = c / "model.safetensors"
+            if sft_c.exists() and sft_c.stat().st_size > 1e9:
+                print(f"[warn] {ckpt_path.name} 不可用（Drive 同步滞后？），")
+                print(f"       自动 fallback 到 {c.name}")
+                return str(c)
+
+    raise FileNotFoundError(
+        f"找不到可用 checkpoint。{ckpt_path} 下无完整 model.safetensors，"
+        f"且同目录其他 checkpoint 也不可用。"
+    )
+
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -575,12 +606,20 @@ def main():
     ap.add_argument("--skip", nargs="*", default=[],
                     choices=["llava_instruct", "textvqa", "refcoco", "sharegpt4v"],
                     help="跳过指定任务")
+    ap.add_argument("--no_auto_fallback", action="store_true",
+                    help="禁用 ckpt-NNNN 不可用时 fallback 到上一个可用 checkpoint")
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    model, tokenizer, image_processor = load_model(args.ckpt_dir, args.processor_dir)
+    # 自动 resolve checkpoint
+    if args.no_auto_fallback:
+        ckpt_dir = args.ckpt_dir
+    else:
+        ckpt_dir = resolve_checkpoint(args.ckpt_dir)
+
+    model, tokenizer, image_processor = load_model(ckpt_dir, args.processor_dir)
     num_image_tokens = compute_num_image_tokens(model.config)
     print(f"num_image_tokens = {num_image_tokens}\n")
 
