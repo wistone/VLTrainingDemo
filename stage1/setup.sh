@@ -24,6 +24,10 @@ pip install -q \
     "Pillow"
 # transformers >=4.49 required for SigLIP2 support (Siglip2VisionModel)
 
+# Colab 预装的 torchao 0.10.0 跟 peft 的 dispatch_torchao 不兼容（peft 要求 >=0.16.0）。
+# 我们没用 torchao（那是量化加速库，跟 LoRA 无关），卸掉它让 peft 走标准 Linear LoRA 路径。
+pip uninstall -y -q torchao 2>/dev/null || true
+
 echo
 echo "=== 挂载 Google Drive（如未挂载，请在 Colab cell 中先执行 from google.colab import drive; drive.mount('/content/drive')）==="
 ls /content/drive/MyDrive 2>/dev/null && echo "Drive OK" || echo "WARN: Drive 未挂载，请先在 Colab 中挂载"
