@@ -44,16 +44,31 @@ from transformers import (
 IGNORE_INDEX = -100
 
 
+def compute_num_image_tokens(config):
+    """LlavaForConditionalGeneration 要求 input_ids 里 <image> 数量 == 视觉 feature 数量。
+    feature 数量由 vision_config 决定。"""
+    vc = config.vision_config
+    n_patches = (vc.image_size // vc.patch_size) ** 2
+    if config.vision_feature_select_strategy == "default":
+        n_patches -= 1  # 砍 CLS（CLIP 风格）
+    return n_patches
+
+
 class LlavaPretrainDataset(Dataset):
     """LLaVA-Pretrain-558K caption 数据集。
 
     每条样本：
-        input_ids = [<image>] + tokenize(caption) + [eos]
-        labels    = [-100]    + tokenize(caption) + [eos]   # 只在 caption 部分算 loss
-        pixel_values = SigLIP 预处理的 384x384 图像
+        input_ids = [<image>] * num_image_tokens + tokenize(caption) + [eos]
+        labels    = [-100]    * num_image_tokens + tokenize(caption) + [eos]
+        pixel_values = SigLIP2 预处理的 384x384 图像
+
+    关键：input_ids 里 <image> token 的数量必须等于视觉 feature 数量（每个 <image>
+    占位符 1:1 替换为一个视觉 feature 向量）。SigLIP2-SO400M-patch14-384 + "full"
+    策略下，每张图产生 27*27=729 个视觉 feature。
     """
 
-    def __init__(self, json_path, image_root, tokenizer, image_processor, max_len=512, limit=None):
+    def __init__(self, json_path, image_root, tokenizer, image_processor, num_image_tokens,
+                 max_len=1024, limit=None):
         with open(json_path) as f:
             self.data = json.load(f)
         if limit is not None:
@@ -61,9 +76,14 @@ class LlavaPretrainDataset(Dataset):
         self.image_root = Path(image_root)
         self.tokenizer = tokenizer
         self.image_processor = image_processor
+        self.num_image_tokens = num_image_tokens
         self.max_len = max_len
         self.image_token_id = tokenizer.convert_tokens_to_ids("<image>")
         self.eos_id = tokenizer.eos_token_id
+
+        # max_len 必须能装下所有 image tokens + 至少 32 个 caption token
+        assert max_len >= num_image_tokens + 32, \
+            f"max_len={max_len} 太小，至少要 {num_image_tokens + 32}（{num_image_tokens} 视觉 token + caption）"
 
     def __len__(self):
         return len(self.data)
@@ -74,19 +94,24 @@ class LlavaPretrainDataset(Dataset):
         img = Image.open(self.image_root / s["image"]).convert("RGB")
         pixel_values = self.image_processor(img, return_tensors="pt").pixel_values[0]
 
-        # 文本：Stage 1 极简——单个 <image> 后直接接 caption（不套 chat template）
-        # LLaVA 原版 Stage 1 也是这种极简格式
+        # 文本：Stage 1 极简——N 个 <image> 占位符 + caption + eos
         caption = s["conversations"][1]["value"].strip()
 
-        prompt_ids = [self.image_token_id]
+        prompt_ids = [self.image_token_id] * self.num_image_tokens
         target_ids = self.tokenizer(caption, add_special_tokens=False).input_ids + [self.eos_id]
 
         input_ids = prompt_ids + target_ids
         labels = [IGNORE_INDEX] * len(prompt_ids) + target_ids
 
+        # 截断时永远不能砍到 image token 段（否则 image features 数量对不上）
         if len(input_ids) > self.max_len:
+            # 只截 caption 尾部
             input_ids = input_ids[: self.max_len]
             labels = labels[: self.max_len]
+            # 保证最后一个 token 是 eos（如果被截了，强制设回去）
+            if input_ids[-1] != self.eos_id:
+                input_ids[-1] = self.eos_id
+                labels[-1] = self.eos_id
 
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
@@ -160,7 +185,7 @@ def main():
     ap.add_argument("--num_epochs", type=int, default=1)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--warmup_ratio", type=float, default=0.03)
-    ap.add_argument("--max_len", type=int, default=512)
+    ap.add_argument("--max_len", type=int, default=1024)
     ap.add_argument("--save_steps", type=int, default=500)
     ap.add_argument("--logging_steps", type=int, default=10)
     ap.add_argument("--num_workers", type=int, default=4)
@@ -187,6 +212,13 @@ def main():
     if hasattr(model.language_model, "gradient_checkpointing_enable"):
         model.language_model.gradient_checkpointing_enable()
 
+    # 计算视觉 token 数（必须和 model 实际产生的 feature 数对上）
+    num_image_tokens = compute_num_image_tokens(model.config)
+    vc = model.config.vision_config
+    print(f"\nnum_image_tokens = {num_image_tokens}  "
+          f"(image_size={vc.image_size}, patch={vc.patch_size}, "
+          f"strategy={model.config.vision_feature_select_strategy})")
+
     # 数据集
     # LLaVA-Pretrain 的 zip 解压后 00xxx 子目录直接在 data_root 下，没有 images/ 这层
     print(f"\n加载数据 from {args.data_root}")
@@ -195,6 +227,7 @@ def main():
     limit = 100 if args.smoke_test else None
     dataset = LlavaPretrainDataset(
         json_path, image_root, tokenizer, image_processor,
+        num_image_tokens=num_image_tokens,
         max_len=args.max_len, limit=limit,
     )
     print(f"数据集大小: {len(dataset)}")

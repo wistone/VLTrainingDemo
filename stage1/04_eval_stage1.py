@@ -27,6 +27,14 @@ from transformers import (
 IGNORE_INDEX = -100
 
 
+def compute_num_image_tokens(config):
+    vc = config.vision_config
+    n = (vc.image_size // vc.patch_size) ** 2
+    if config.vision_feature_select_strategy == "default":
+        n -= 1
+    return n
+
+
 def load_model(ckpt_dir):
     print(f"加载 checkpoint: {ckpt_dir}")
     model = LlavaForConditionalGeneration.from_pretrained(
@@ -38,14 +46,14 @@ def load_model(ckpt_dir):
 
 
 @torch.inference_mode()
-def generate_caption(model, tokenizer, image_processor, image_path, max_new_tokens=64):
+def generate_caption(model, tokenizer, image_processor, image_path, num_image_tokens, max_new_tokens=64):
     image = Image.open(image_path).convert("RGB")
     pixel_values = image_processor(image, return_tensors="pt").pixel_values.to(
         model.device, dtype=model.dtype
     )
 
     image_token_id = tokenizer.convert_tokens_to_ids("<image>")
-    input_ids = torch.tensor([[image_token_id]]).to(model.device)
+    input_ids = torch.tensor([[image_token_id] * num_image_tokens]).to(model.device)
 
     out = model.generate(
         input_ids=input_ids,
@@ -57,12 +65,12 @@ def generate_caption(model, tokenizer, image_processor, image_path, max_new_toke
     return tokenizer.decode(out[0][input_ids.size(1):], skip_special_tokens=True)
 
 
-def caption_quality(model, tokenizer, image_processor, holdout_data, image_root, out_path):
+def caption_quality(model, tokenizer, image_processor, holdout_data, image_root, num_image_tokens, out_path):
     print(f"\n[Caption 质量] 在 {len(holdout_data)} 张 held-out 图上生成 caption")
     results = []
     for i, s in enumerate(holdout_data):
         img_path = Path(image_root) / s["image"]
-        cap = generate_caption(model, tokenizer, image_processor, img_path)
+        cap = generate_caption(model, tokenizer, image_processor, img_path, num_image_tokens)
         gt = s["conversations"][1]["value"]
         results.append({
             "image": s["image"],
@@ -79,7 +87,8 @@ def caption_quality(model, tokenizer, image_processor, holdout_data, image_root,
 
 
 @torch.inference_mode()
-def compute_loss_with_without_image(model, tokenizer, image_processor, holdout_data, image_root, n=10):
+def compute_loss_with_without_image(model, tokenizer, image_processor, holdout_data, image_root,
+                                    num_image_tokens, n=10):
     """对 n 个样本计算 (有图 loss) vs (无图 loss)，期望差 ≥ 1.0。
 
     无图模式：把 pixel_values 替换成全黑图（或全零）。这样输入仍然有 <image> token 占位，
@@ -95,8 +104,8 @@ def compute_loss_with_without_image(model, tokenizer, image_processor, holdout_d
         image = Image.open(img_path).convert("RGB")
         caption = s["conversations"][1]["value"].strip()
 
-        # 构造 input
-        prompt_ids = [image_token_id]
+        # 构造 input：N 个 <image> 占位符 + caption
+        prompt_ids = [image_token_id] * num_image_tokens
         target_ids = tokenizer(caption, add_special_tokens=False).input_ids + [eos_id]
         input_ids = torch.tensor([prompt_ids + target_ids]).to(model.device)
         labels = torch.tensor([[IGNORE_INDEX] * len(prompt_ids) + target_ids]).to(model.device)
@@ -168,16 +177,20 @@ def main():
     image_root = Path(args.data_root)
 
     model, tokenizer, image_processor = load_model(args.ckpt_dir)
+    num_image_tokens = compute_num_image_tokens(model.config)
+    print(f"num_image_tokens = {num_image_tokens}")
 
     # 1. caption 质量
     caption_quality(
         model, tokenizer, image_processor, holdout, image_root,
+        num_image_tokens,
         out_dir / "captions.json",
     )
 
     # 2. ablation
     result = compute_loss_with_without_image(
         model, tokenizer, image_processor, holdout, image_root,
+        num_image_tokens,
         n=args.ablation_n,
     )
     with open(out_dir / "ablation.json", "w") as f:

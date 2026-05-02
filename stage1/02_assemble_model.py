@@ -77,13 +77,15 @@ def main():
 
     # 4. 构造 LlavaConfig
     print("\n[4/5] 构造 LlavaConfig")
+    # 注意：SigLIP/SigLIP2 没有 CLS token（不像 CLIP），所以用 "full" 而不是 "default"
+    # "default" 会无缘无故砍掉第一个 patch；"full" 保留全部 27*27=729 个
     llava_config = LlavaConfig(
         text_config=text_model.config,
         vision_config=vision_config,
         image_token_index=image_token_id,
         projector_hidden_act="gelu",
         vision_feature_layer=-2,
-        vision_feature_select_strategy="default",
+        vision_feature_select_strategy="full",
         ignore_index=-100,
     )
     # 同步 vocab size（前面 resize 过）
