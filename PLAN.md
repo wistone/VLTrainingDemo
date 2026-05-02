@@ -47,22 +47,33 @@
 - 大小：图像 ~25GB + json ~500MB
 
 ### 训练配置
-- batch size: 32（80GB）/ 16（40GB）
+- batch size: 32（80GB）/ **8 + grad_accum 4（40GB，等效 32）**
 - learning rate: 1e-3（projector 高 lr，因为只训它）
 - epochs: 1
-- 总步数：约 17,500 步
+- 总步数：约 17,500 步（effective batch 32）
 
 ### 估计耗时
 - A100 80GB：**4–6 小时**
-- A100 40GB：**6–9 小时**（需要降 batch + grad accumulation）
+- A100 40GB：**~9 小时**（实测 17.5 样本/秒 → 558K/17.5 ≈ 8.9h）
 
 ### 衡量标准（Pass / Fail）
+
+**初始 loss 理论值**：$\ln(\text{vocab}) = \ln(152064) ≈ 11.93$（Qwen2.5 vocab 是 152K，远大于 LLaMA-2 的 32K，所以初始基线高）
+
 | 指标 | 通过线 | 怎么测 |
 |---|---|---|
-| Loss 收敛 | 从 ~6.0 降到 ≤ 2.5 | 看 wandb / tensorboard |
-| 定性 caption 质量 | 20 张 held-out COCO 图，至少 15 张描述抓到主体 | 人工 review |
+| Loss 收敛 | 从 **~11.9 降到 ≤ 3.0** | 看 wandb / tensorboard |
+| 烟雾测试（50 步 / 100 样本） | loss ≤ 10 | 流程性验证，不要拿这个判断质量 |
+| 定性 caption 质量 | 20 张 held-out 图，至少 15 张描述抓到主体 | 人工 review |
 | 不崩 | 无 NaN，无显存爆炸 | 看日志 |
-| 视觉 token 利用率 | 输入图像 vs 不输入图像，loss 差 ≥ 1.0 | 自己写 ablation 脚本 |
+| 视觉 token 利用率 | 输入图像 vs 不输入图像，loss 差 ≥ 1.0 | `04_eval_stage1.py` ablation |
+
+**典型 loss 轨迹**（参考）：
+- step 0：~11.9（随机）
+- step 1K（warmup 完）：~5.0
+- step 5K：~3.5
+- step 10K：~2.8
+- step 17.5K（end）：**~2.5–3.0**（PASS 线）
 
 **自我验证**：随便贴一张猫图，模型应该能说出"a cat sitting on..."级别的描述。如果还在生成无关内容，说明 projector 没对齐成功。
 
