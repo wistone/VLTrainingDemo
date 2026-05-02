@@ -6,23 +6,68 @@
    loss 差应 ≥ 1.0 ——证明 projector 真的把视觉信息注入进了 LLM。
    如果差距很小，说明视觉对齐没成功。
 
-用法：
+可用于：
+- 训练完成后的 final eval
+- 训练过程中（不会影响训练 session）的中间 checkpoint 提前 eval
+
+用法（final）：
     python stage1/04_eval_stage1.py \\
-        --ckpt_dir /content/drive/MyDrive/qwenvl3/stage1_ckpt \\
-        --data_root /content/data/llava-pretrain \\
-        --out_dir /content/drive/MyDrive/qwenvl3/eval_stage1
+        --ckpt_dir /content/drive/MyDrive/qwenvl3/stage1_ckpt_v3 \\
+        --data_root /content/data/llava-pretrain
+
+用法（中间 checkpoint）：
+    python stage1/04_eval_stage1.py \\
+        --ckpt_dir /content/drive/MyDrive/qwenvl3/stage1_ckpt_v3/checkpoint-2500 \\
+        --processor_dir /content/drive/MyDrive/qwenvl3/stage1_init \\
+        --data_root /content/data/llava-pretrain
 """
 import argparse
+import io
 import json
+import sys
+import zipfile
 from pathlib import Path
 
 import torch
 from PIL import Image
 from transformers import (
+    AutoImageProcessor,
     AutoTokenizer,
     LlavaForConditionalGeneration,
-    SiglipImageProcessor,
 )
+
+
+class ImageLoader:
+    """统一的图像加载接口：可从目录或 zip 加载。
+
+    用法：
+      ImageLoader(image_root="/content/data/llava-pretrain")  # 从解压目录
+      ImageLoader(images_zip="/content/drive/.../images.zip")  # 从 zip 直接读
+    """
+    def __init__(self, image_root=None, images_zip=None):
+        if (image_root is None) == (images_zip is None):
+            raise ValueError("image_root 和 images_zip 必须二选一")
+        self.image_root = Path(image_root) if image_root else None
+        self.zip = zipfile.ZipFile(images_zip) if images_zip else None
+
+    def open(self, rel_path):
+        """rel_path 形如 '00188/001883900.jpg'。返回 PIL.Image (RGB)。"""
+        if self.image_root:
+            return Image.open(self.image_root / rel_path).convert("RGB")
+        with self.zip.open(rel_path) as f:
+            data = f.read()
+        return Image.open(io.BytesIO(data)).convert("RGB")
+
+    def __del__(self):
+        if self.zip is not None:
+            try:
+                self.zip.close()
+            except Exception:
+                pass
+
+# 让脚本无论从哪里启动都能 import 同目录下的 _common
+sys.path.insert(0, str(Path(__file__).parent))
+from _common import install_custom_projector, get_components  # noqa: E402
 
 IGNORE_INDEX = -100
 
@@ -35,19 +80,39 @@ def compute_num_image_tokens(config):
     return n
 
 
-def load_model(ckpt_dir):
+def load_model(ckpt_dir, processor_dir=None):
+    """加载 model + tokenizer + image_processor。
+
+    processor_dir：为 None 时从 ckpt_dir 加载（适合 final ckpt）；
+                   指定时从该目录加载（适合中间 checkpoint，里面没有 image processor）。
+    """
     print(f"加载 checkpoint: {ckpt_dir}")
     model = LlavaForConditionalGeneration.from_pretrained(
         ckpt_dir, torch_dtype=torch.bfloat16
-    ).cuda().eval()
+    )
+
+    # 替换 projector 为 ProjectorWithNorm 并从 ckpt 加载权重（包括 LayerNorm）
+    print("装载 ProjectorWithNorm...")
+    install_custom_projector(model, init_dir=ckpt_dir, dtype=torch.bfloat16)
+
+    model = model.cuda().eval()
+
+    # tokenizer 中间 checkpoint 都有
     tokenizer = AutoTokenizer.from_pretrained(ckpt_dir)
-    image_processor = SiglipImageProcessor.from_pretrained(ckpt_dir)
+
+    # image_processor 中间 checkpoint 没存，从指定目录加载
+    proc_dir = processor_dir or ckpt_dir
+    print(f"加载 image_processor from: {proc_dir}")
+    image_processor = AutoImageProcessor.from_pretrained(proc_dir)
+
     return model, tokenizer, image_processor
 
 
 @torch.inference_mode()
-def generate_caption(model, tokenizer, image_processor, image_path, num_image_tokens, max_new_tokens=64):
-    image = Image.open(image_path).convert("RGB")
+def generate_caption(model, tokenizer, image_processor, image, num_image_tokens, max_new_tokens=64):
+    """image 可以是 PIL.Image 也可以是文件路径。"""
+    if not isinstance(image, Image.Image):
+        image = Image.open(image).convert("RGB")
     pixel_values = image_processor(image, return_tensors="pt").pixel_values.to(
         model.device, dtype=model.dtype
     )
@@ -65,12 +130,12 @@ def generate_caption(model, tokenizer, image_processor, image_path, num_image_to
     return tokenizer.decode(out[0][input_ids.size(1):], skip_special_tokens=True)
 
 
-def caption_quality(model, tokenizer, image_processor, holdout_data, image_root, num_image_tokens, out_path):
+def caption_quality(model, tokenizer, image_processor, holdout_data, image_loader, num_image_tokens, out_path):
     print(f"\n[Caption 质量] 在 {len(holdout_data)} 张 held-out 图上生成 caption")
     results = []
     for i, s in enumerate(holdout_data):
-        img_path = Path(image_root) / s["image"]
-        cap = generate_caption(model, tokenizer, image_processor, img_path, num_image_tokens)
+        image = image_loader.open(s["image"])
+        cap = generate_caption(model, tokenizer, image_processor, image, num_image_tokens)
         gt = s["conversations"][1]["value"]
         results.append({
             "image": s["image"],
@@ -87,7 +152,7 @@ def caption_quality(model, tokenizer, image_processor, holdout_data, image_root,
 
 
 @torch.inference_mode()
-def compute_loss_with_without_image(model, tokenizer, image_processor, holdout_data, image_root,
+def compute_loss_with_without_image(model, tokenizer, image_processor, holdout_data, image_loader,
                                     num_image_tokens, n=10):
     """对 n 个样本计算 (有图 loss) vs (无图 loss)，期望差 ≥ 1.0。
 
@@ -100,8 +165,7 @@ def compute_loss_with_without_image(model, tokenizer, image_processor, holdout_d
 
     losses_with, losses_without = [], []
     for i, s in enumerate(holdout_data[:n]):
-        img_path = Path(image_root) / s["image"]
-        image = Image.open(img_path).convert("RGB")
+        image = image_loader.open(s["image"])
         caption = s["conversations"][1]["value"].strip()
 
         # 构造 input：N 个 <image> 占位符 + caption
@@ -159,37 +223,51 @@ def compute_loss_with_without_image(model, tokenizer, image_processor, holdout_d
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt_dir", required=True)
-    ap.add_argument("--data_root", required=True, help="包含 images/ 和 holdout_20.json")
+    ap.add_argument("--ckpt_dir", required=True,
+                    help="模型 checkpoint 目录（可以是 final ckpt 或 checkpoint-NNNN）")
+    ap.add_argument("--processor_dir", default=None,
+                    help="image processor 目录（中间 checkpoint 通常没存 processor，"
+                         "需要指定到 stage1_init）")
+    ap.add_argument("--holdout_json", required=True,
+                    help="holdout_20.json 路径（如 /content/drive/MyDrive/qwenvl3/data/llava-pretrain/holdout_20.json）")
+    ap.add_argument("--image_root", default=None,
+                    help="图像解压根目录（含 00xxx 子目录）。与 --images_zip 二选一")
+    ap.add_argument("--images_zip", default=None,
+                    help="images.zip 路径（直接从 zip 读，省去解压 25GB）。与 --image_root 二选一")
     ap.add_argument("--out_dir", default="/content/drive/MyDrive/qwenvl3/eval_stage1")
     ap.add_argument("--ablation_n", type=int, default=10)
     args = ap.parse_args()
 
+    if (args.image_root is None) == (args.images_zip is None):
+        raise ValueError("必须二选一指定 --image_root 或 --images_zip")
+
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    holdout_path = Path(args.data_root) / "holdout_20.json"
+    holdout_path = Path(args.holdout_json)
     if not holdout_path.exists():
-        raise FileNotFoundError(f"找不到 {holdout_path}，请先跑 01_prepare_data.py")
+        raise FileNotFoundError(f"找不到 {holdout_path}")
     with open(holdout_path) as f:
         holdout = json.load(f)
-    # LLaVA-Pretrain 的 zip 解压后 00xxx 子目录直接在 data_root 下
-    image_root = Path(args.data_root)
+    print(f"载入 holdout: {len(holdout)} 张")
 
-    model, tokenizer, image_processor = load_model(args.ckpt_dir)
+    image_loader = ImageLoader(image_root=args.image_root, images_zip=args.images_zip)
+    print(f"图像源: {args.image_root or args.images_zip}")
+
+    model, tokenizer, image_processor = load_model(args.ckpt_dir, args.processor_dir)
     num_image_tokens = compute_num_image_tokens(model.config)
     print(f"num_image_tokens = {num_image_tokens}")
 
     # 1. caption 质量
     caption_quality(
-        model, tokenizer, image_processor, holdout, image_root,
+        model, tokenizer, image_processor, holdout, image_loader,
         num_image_tokens,
         out_dir / "captions.json",
     )
 
     # 2. ablation
     result = compute_loss_with_without_image(
-        model, tokenizer, image_processor, holdout, image_root,
+        model, tokenizer, image_processor, holdout, image_loader,
         num_image_tokens,
         n=args.ablation_n,
     )
