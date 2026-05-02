@@ -176,6 +176,75 @@ def detect_repetition(text, min_run=4):
 
 
 # ============================================================================
+# Checkpoint 自动 resolve（兼容"顶层 final"和"checkpoint-NNNN 中间"两种用法）
+# ============================================================================
+
+def resolve_stage2_ckpt(p: str) -> str:
+    """检查 Stage 2 ckpt 路径是否真的能加载，不能就 fallback 到最新可用 checkpoint-NNNN。
+
+    Stage 2 ckpt 必须含：adapter_model.safetensors + multi_modal_projector.safetensors
+    （训练正常跑完后顶层就有；中途停的只在 checkpoint-NNNN/ 里有）。
+    """
+    path = Path(p)
+
+    def is_complete(d: Path) -> bool:
+        return ((d / "adapter_model.safetensors").exists()
+                and (d / "multi_modal_projector.safetensors").exists())
+
+    if is_complete(path):
+        return str(path)
+
+    # fallback：扫子目录的 checkpoint-NNNN
+    if path.exists() and path.is_dir():
+        candidates = sorted(
+            (c for c in path.glob("checkpoint-*") if c.is_dir() and is_complete(c)),
+            key=lambda c: int(c.name.split("-")[1]),
+            reverse=True,
+        )
+        if candidates:
+            print(f"[warn] {path} 顶层没有 final 文件（训练未完成？），"
+                  f"自动 fallback 到 {candidates[0].name}")
+            return str(candidates[0])
+
+    # 用户直接给了 checkpoint-NNNN 但里面也不完整？
+    raise FileNotFoundError(
+        f"找不到可用 Stage 2 checkpoint。{path} 不含完整的 "
+        f"adapter_model.safetensors + multi_modal_projector.safetensors。"
+        f"\n  可用目录: {[c.name for c in path.glob('checkpoint-*')] if path.exists() else 'N/A'}"
+    )
+
+
+def resolve_stage1_ckpt(p: str) -> str:
+    """检查 Stage 1 ckpt 路径，不能用就 fallback 到最新 checkpoint-NNNN。
+
+    Stage 1 ckpt 必须含完整 base：model.safetensors（>1GB）+ vision/language 权重。
+    """
+    path = Path(p)
+
+    def is_complete(d: Path) -> bool:
+        sft = d / "model.safetensors"
+        return sft.exists() and sft.stat().st_size > 1e9
+
+    if is_complete(path):
+        return str(path)
+
+    if path.exists() and path.is_dir():
+        candidates = sorted(
+            (c for c in path.glob("checkpoint-*") if c.is_dir() and is_complete(c)),
+            key=lambda c: int(c.name.split("-")[1]),
+            reverse=True,
+        )
+        if candidates:
+            print(f"[warn] {path} 顶层没有 final model.safetensors，"
+                  f"自动 fallback 到 {candidates[0].name}")
+            return str(candidates[0])
+
+    raise FileNotFoundError(
+        f"找不到可用 Stage 1 checkpoint。{path} 不含 model.safetensors（>1GB）。"
+    )
+
+
+# ============================================================================
 # 模型加载（base + projector + LoRA adapter，最后 merge）
 # ============================================================================
 
@@ -766,6 +835,13 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    # 自动 resolve：顶层不可用时 fallback 到最新 checkpoint-NNNN
+    args.stage2_ckpt = resolve_stage2_ckpt(args.stage2_ckpt)
+    args.stage1_ckpt = resolve_stage1_ckpt(args.stage1_ckpt)
+    print(f"[ckpt] stage2 = {args.stage2_ckpt}")
+    print(f"[ckpt] stage1 = {args.stage1_ckpt}")
+
     out_dir = Path(args.out_dir) / Path(args.stage2_ckpt).name
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"[out_dir] {out_dir}\n")
