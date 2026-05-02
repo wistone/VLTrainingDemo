@@ -26,6 +26,7 @@ Colab session 断开后重跑此脚本会自动从最近 checkpoint 续训。
 import argparse
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
@@ -40,6 +41,10 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
+
+# 让脚本无论从哪里启动都能 import 同目录下的 _common
+sys.path.insert(0, str(Path(__file__).parent))
+from _common import install_custom_projector  # noqa: E402
 
 
 def print_gpu_mem_and_recommend(batch_size, num_image_tokens):
@@ -224,6 +229,11 @@ def main():
     )
     tokenizer = AutoTokenizer.from_pretrained(args.model_init_dir)
     image_processor = AutoImageProcessor.from_pretrained(args.model_init_dir)
+
+    # 关键：HF 用 config 里默认的 LlavaMultiModalProjector 构造 projector，
+    # 会忽略 safetensors 里 multi_modal_projector.norm.* 权重。必须替换并手动加载。
+    print("\n替换 projector 为 ProjectorWithNorm（带 LayerNorm）...")
+    install_custom_projector(model, init_dir=args.model_init_dir, dtype=torch.bfloat16)
 
     # 冻结
     freeze_except_projector(model)

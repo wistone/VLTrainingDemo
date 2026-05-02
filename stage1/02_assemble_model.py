@@ -22,6 +22,8 @@
 import os
 from pathlib import Path
 
+import sys
+
 import torch
 from transformers import (
     AutoImageProcessor,
@@ -30,6 +32,14 @@ from transformers import (
     AutoTokenizer,
     LlavaConfig,
     LlavaForConditionalGeneration,
+)
+
+# 让脚本无论从哪里启动都能 import 同目录下的 _common
+sys.path.insert(0, str(Path(__file__).parent))
+from _common import (  # noqa: E402
+    ProjectorWithNorm,
+    get_components,
+    install_custom_projector,
 )
 
 OUT_DIR = Path(os.environ.get("MODEL_INIT_DIR", "/content/drive/MyDrive/qwenvl3/stage1_init"))
@@ -97,21 +107,30 @@ def main():
     model = LlavaForConditionalGeneration(llava_config)
     model = model.to(torch.bfloat16)
 
-    # 视觉塔权重（注意 LLaVA 的 vision_tower 直接是 SiglipVisionModel）
-    missing, unexpected = model.vision_tower.load_state_dict(
+    # 拿到内部组件（兼容新旧 API）
+    lm_module, vt_module, _ = get_components(model)
+
+    # 视觉塔权重
+    missing, unexpected = vt_module.load_state_dict(
         vision_model.state_dict(), strict=False
     )
     print(f"  vision_tower: missing={len(missing)} unexpected={len(unexpected)}")
 
     # 文本模型权重
-    missing, unexpected = model.language_model.load_state_dict(
+    missing, unexpected = lm_module.load_state_dict(
         text_model.state_dict(), strict=False
     )
     print(f"  language_model: missing={len(missing)} unexpected={len(unexpected)}")
 
-    # 检查 projector 是否随机初始化（Stage 1 训练目标）
-    proj_param = next(model.multi_modal_projector.parameters())
-    print(f"  projector 初始权重 mean={proj_param.mean().item():.4f} std={proj_param.std().item():.4f}（应该是随机小值）")
+    # ===== 关键修复：替换默认 projector 为带 LayerNorm 的版本 =====
+    # Qwen2.5 + LLaVA 必须做这步，否则 projector 会被训练放大到 1000× norm
+    install_custom_projector(model, init_dir=None, dtype=torch.bfloat16)
+    print("  已替换 projector → ProjectorWithNorm（含 LayerNorm 输出）")
+
+    # 重新拿一次 projector 的引用（替换之后变了）
+    _, _, proj_module = get_components(model)
+    proj_param = next(proj_module.parameters())
+    print(f"  projector 初始权重 mean={proj_param.mean().item():.4f} std={proj_param.std().item():.4f}")
 
     # 保存
     print(f"\n保存到 {OUT_DIR}")
@@ -121,9 +140,9 @@ def main():
 
     # Param 统计
     total = sum(p.numel() for p in model.parameters())
-    proj = sum(p.numel() for p in model.multi_modal_projector.parameters())
-    vision = sum(p.numel() for p in model.vision_tower.parameters())
-    lm = sum(p.numel() for p in model.language_model.parameters())
+    proj = sum(p.numel() for p in proj_module.parameters())
+    vision = sum(p.numel() for p in vt_module.parameters())
+    lm = sum(p.numel() for p in lm_module.parameters())
     print(f"\n参数量统计:")
     print(f"  total:        {total/1e9:.3f}B")
     print(f"  vision_tower: {vision/1e6:.1f}M  (Stage 1 冻结)")
