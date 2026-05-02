@@ -86,16 +86,26 @@ def load_model(ckpt_dir, processor_dir=None):
     processor_dir：为 None 时从 ckpt_dir 加载（适合 final ckpt）；
                    指定时从该目录加载（适合中间 checkpoint，里面没有 image processor）。
     """
+    # 自动选 device：优先 CUDA，没有就用 CPU（CPU 慢但能跑）
+    if torch.cuda.is_available():
+        device = "cuda"
+        dtype = torch.bfloat16
+        print(f"[device] CUDA 可用，使用 GPU + bf16")
+    else:
+        device = "cpu"
+        dtype = torch.float32  # CPU 上 bf16 慢且不全支持，用 fp32 更稳
+        print(f"[device] 无 CUDA，使用 CPU + fp32（慢；20 张图大约 15–30 min）")
+
     print(f"加载 checkpoint: {ckpt_dir}")
     model = LlavaForConditionalGeneration.from_pretrained(
-        ckpt_dir, torch_dtype=torch.bfloat16
+        ckpt_dir, torch_dtype=dtype
     )
 
     # 替换 projector 为 ProjectorWithNorm 并从 ckpt 加载权重（包括 LayerNorm）
     print("装载 ProjectorWithNorm...")
-    install_custom_projector(model, init_dir=ckpt_dir, dtype=torch.bfloat16)
+    install_custom_projector(model, init_dir=ckpt_dir, dtype=dtype)
 
-    model = model.cuda().eval()
+    model = model.to(device).eval()
 
     # tokenizer 中间 checkpoint 都有
     tokenizer = AutoTokenizer.from_pretrained(ckpt_dir)
