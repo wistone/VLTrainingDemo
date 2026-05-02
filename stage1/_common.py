@@ -35,10 +35,19 @@ class ProjectorWithNorm(nn.Module):
 
 
 def get_inner(model):
-    """兼容 transformers 新旧 API：组件可能在 model 或 model.model 下。"""
-    if hasattr(model, "language_model"):
-        return model
-    return model.model
+    """返回真正持有 multi_modal_projector / vision_tower / language_model 的容器。
+
+    新 API（transformers ≥4.50）：组件挂在 model.model（LlavaModel）下；顶层
+    LlavaForConditionalGeneration 暴露的同名 property 不能简单地用 hasattr 判定，
+    因为 setter 行为不可靠，赋值可能不生效。
+
+    旧 API：组件直接挂在 model 下。
+
+    判定逻辑：直接看 `multi_modal_projector` 这个真正的子模块在哪里。
+    """
+    if hasattr(model, "model") and isinstance(getattr(model.model, "multi_modal_projector", None), nn.Module):
+        return model.model
+    return model
 
 
 def get_components(model):
@@ -64,6 +73,19 @@ def install_custom_projector(model, init_dir=None, dtype=None):
     if dtype is not None:
         new_proj = new_proj.to(dtype)
     set_projector(model, new_proj)
+
+    # 验证替换生效——直接检查 nn.Module._modules 里的对象 identity
+    inner = get_inner(model)
+    actual = inner._modules.get("multi_modal_projector")
+    if actual is not new_proj:
+        raise RuntimeError(
+            f"Projector 替换失败！\n"
+            f"  期望: ProjectorWithNorm (id={id(new_proj)})\n"
+            f"  实际: type={type(actual).__name__}, id={id(actual) if actual else None}\n"
+            f"  inner type: {type(inner).__name__}\n"
+            f"  请检查 transformers 版本与 get_inner() 判定是否一致。"
+        )
+    print(f"  ✅ projector 替换成功: type={type(actual).__name__}, 挂载位置={type(inner).__name__}.multi_modal_projector")
 
     if init_dir is None:
         return new_proj
