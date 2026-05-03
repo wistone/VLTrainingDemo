@@ -424,17 +424,149 @@ def chat_generate(model, image_processor, image, prompt_builder, question,
 
 
 # ============================================================================
+# 批量推理 helper —— 用于 --eval_batch_size > 1 时大幅加速
+# ============================================================================
+
+@torch.inference_mode()
+def chat_generate_batch(model, image_processor, images, prompt_builder, questions,
+                        max_new_tokens=80):
+    """chat_generate 的批量版本。
+
+    images:    list of PIL.Image（长度 B）
+    questions: list of str（长度 B）
+    返回: list of decoded strings（长度 B）
+
+    技术细节：
+    - 图像批量过 image_processor → 形状 [B, 3, H, W]
+    - 各样本 prompt 长度可能不同（image token 729 一致，但 question 文本变长）
+      → 用 pad_token_id **左对齐填充** 到同一长度，让所有样本的"生成起点"对齐到右边
+    - attention_mask 标注 padding 位置
+    - HF generate 自动处理每个样本独立的 EOS 截断，未到 EOS 的继续生成
+    """
+    if not images:
+        return []
+    if len(images) == 1:
+        # 单样本退化为非 batch 路径
+        return [chat_generate(model, image_processor, images[0], prompt_builder,
+                              questions[0], max_new_tokens=max_new_tokens)]
+
+    n = len(images)
+    pad_id = prompt_builder.tokenizer.pad_token_id or prompt_builder.tokenizer.eos_token_id
+    eos_id = prompt_builder.tokenizer.eos_token_id
+
+    # ---- 1) 批量图像处理 ----
+    pixel_values = image_processor(images, return_tensors="pt").pixel_values.to(
+        model.device, dtype=model.dtype,
+    )
+
+    # ---- 2) 各样本 prompt（image+question） ----
+    prompt_ids_list = []
+    for q in questions:
+        full_q = f"<image>\n{q}" if q else "<image>"
+        prompt_ids_list.append(prompt_builder.build(full_q))
+
+    # ---- 3) 左对齐填充到相同长度 ----
+    max_len = max(len(ids) for ids in prompt_ids_list)
+    input_ids_list = []
+    attention_mask_list = []
+    for ids in prompt_ids_list:
+        n_pad = max_len - len(ids)
+        # 左 padding（pad 在前，prompt 在后），这样所有样本"生成起点"在右边对齐
+        input_ids_list.append([pad_id] * n_pad + list(ids))
+        attention_mask_list.append([0] * n_pad + [1] * len(ids))
+
+    input_ids = torch.tensor(input_ids_list).to(model.device)
+    attention_mask = torch.tensor(attention_mask_list).to(model.device)
+
+    stop_ids = [prompt_builder.im_end_id]
+    if eos_id and eos_id != prompt_builder.im_end_id:
+        stop_ids.append(eos_id)
+
+    out = model.generate(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        pixel_values=pixel_values,
+        max_new_tokens=max_new_tokens,
+        do_sample=False,
+        eos_token_id=stop_ids,
+        pad_token_id=pad_id,
+    )
+
+    # ---- 4) 逐样本 decode（跳过 padding+prompt） ----
+    results = []
+    for i in range(n):
+        # out[i] 形状 [max_len + 实际生成长度]，前 max_len 是 padding+prompt
+        gen_ids = out[i][max_len:]
+        text = prompt_builder.tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+        results.append(text)
+
+    return results
+
+
+class BatchedGenerationRunner:
+    """缓冲 (image, question, metadata) 三元组，缓冲满则刷写 chat_generate_batch。
+
+    每个结果会调用用户提供的 `consumer(metadata, generated_text)` 回调。
+    用来在不大改 eval 函数结构的前提下，把 batched 推理塞进现有循环。
+
+    用法:
+        def consume(meta, gen):
+            # 处理一个生成结果（解析、打分、记录、log）
+            ...
+
+        runner = BatchedGenerationRunner(model, image_processor, prompt_builder,
+                                         batch_size=8, consumer=consume,
+                                         max_new_tokens=20)
+        for s in samples:
+            ...
+            runner.add(image, question, metadata)
+        runner.flush()  # 处理剩余不足一个 batch 的样本
+    """
+    def __init__(self, model, image_processor, prompt_builder, batch_size,
+                 consumer, max_new_tokens=80):
+        self.model = model
+        self.image_processor = image_processor
+        self.prompt_builder = prompt_builder
+        self.batch_size = max(1, int(batch_size))
+        self.consumer = consumer
+        self.max_new_tokens = max_new_tokens
+        self.buffer = []  # list of (image, question, metadata)
+
+    def add(self, image, question, metadata):
+        self.buffer.append((image, question, metadata))
+        if len(self.buffer) >= self.batch_size:
+            self.flush()
+
+    def flush(self):
+        if not self.buffer:
+            return
+        images = [b[0] for b in self.buffer]
+        questions = [b[1] for b in self.buffer]
+        metas = [b[2] for b in self.buffer]
+        gens = chat_generate_batch(
+            self.model, self.image_processor, images,
+            self.prompt_builder, questions,
+            max_new_tokens=self.max_new_tokens,
+        )
+        for meta, gen in zip(metas, gens):
+            self.consumer(meta, gen)
+        self.buffer = []
+
+
+# ============================================================================
 # Task 1: RefCOCO val/testA/testB（天然 held-out，IoU@0.5）
 # ============================================================================
 
 def eval_refcoco_split(model, image_processor, prompt_builder,
-                       data_root, split_name, n_samples, out_path):
+                       data_root, split_name, n_samples, out_path, batch_size=1):
     """RefCOCO 在指定 split 上做 grounding 评测。
 
     问题模板（与训练一致）：
         Provide the bounding box coordinates of <ref expression>.
 
     指标：Acc@0.5 / Acc@0.7 / mean IoU / parse_rate
+
+    batch_size>1 时用 BatchedGenerationRunner 批量推理（4-5x 加速）。
     """
     from datasets import load_dataset
 
@@ -443,7 +575,7 @@ def eval_refcoco_split(model, image_processor, prompt_builder,
         print(f"[skip] RefCOCO ({split_name}): {rc_dir} 不存在")
         return None
 
-    print(f"\n[task] RefCOCO {split_name}  (n_target={n_samples})")
+    print(f"\n[task] RefCOCO {split_name}  (n_target={n_samples}, batch_size={batch_size})")
     try:
         ds = load_dataset(str(rc_dir), split=split_name, trust_remote_code=True)
     except Exception as e:
@@ -452,13 +584,34 @@ def eval_refcoco_split(model, image_processor, prompt_builder,
     print(f"  数据加载成功: {len(ds)} 条，字段 {list(ds.features.keys())[:8]}")
 
     n = min(n_samples, len(ds))
-    results = []
-    ious = []
-    parseable = 0
+    state = {"results": [], "ious": [], "parseable": 0}
+
+    def consume(meta, gen):
+        i_in_loop = meta["i_in_loop"]
+        ref = meta["ref"]
+        gt_box = meta["gt_box"]
+        pred_box = parse_bbox(gen)
+        sample_iou = 0.0
+        if pred_box is not None:
+            state["parseable"] += 1
+            sample_iou = iou(pred_box, gt_box)
+        state["ious"].append(sample_iou)
+        state["results"].append({
+            "idx": meta["idx"], "ref": ref,
+            "gt_bbox": [round(c, 4) for c in gt_box],
+            "pred_bbox": [round(c, 4) for c in pred_box] if pred_box else None,
+            "iou": round(sample_iou, 4), "generated": gen,
+        })
+        if i_in_loop < 3 or (i_in_loop + 1) % 200 == 0 or i_in_loop == n - 1:
+            print(f"  [{i_in_loop+1}/{n}] {ref[:40]!r}  IoU={sample_iou:.3f}  gen={gen[:60]!r}")
+
+    runner = BatchedGenerationRunner(
+        model, image_processor, prompt_builder,
+        batch_size=batch_size, consumer=consume, max_new_tokens=40,
+    )
 
     for i in range(n):
         s = ds[i]
-        # 取图
         img_field = s.get("image")
         if isinstance(img_field, dict) and "bytes" in img_field:
             image = Image.open(io.BytesIO(img_field["bytes"])).convert("RGB")
@@ -468,7 +621,6 @@ def eval_refcoco_split(model, image_processor, prompt_builder,
             continue
         iw, ih = image.size
 
-        # 取 ref expression（lmms-lab/RefCOCO 用 'answer' 字段存 ref）
         ref = None
         for key in ["answer", "sentences", "sentence", "ref",
                     "referring_expression", "caption"]:
@@ -483,7 +635,6 @@ def eval_refcoco_split(model, image_processor, prompt_builder,
         if not ref:
             continue
 
-        # 取 GT bbox（COCO 的 [x, y, w, h] 像素坐标）
         bbox = s.get("bbox") or s.get("box")
         if not bbox or len(bbox) != 4:
             continue
@@ -493,24 +644,13 @@ def eval_refcoco_split(model, image_processor, prompt_builder,
         else:
             gt_box = tuple(bbox)
 
-        # 推理
         question = f"Provide the bounding box coordinates of {ref}."
-        gen = chat_generate(model, image_processor, image, prompt_builder,
-                            question, max_new_tokens=40)
-        pred_box = parse_bbox(gen)
-        sample_iou = 0.0
-        if pred_box is not None:
-            parseable += 1
-            sample_iou = iou(pred_box, gt_box)
-        ious.append(sample_iou)
-        results.append({
-            "idx": i+1, "ref": ref,
-            "gt_bbox": [round(c, 4) for c in gt_box],
-            "pred_bbox": [round(c, 4) for c in pred_box] if pred_box else None,
-            "iou": round(sample_iou, 4), "generated": gen,
+        runner.add(image, question, {
+            "idx": i + 1, "i_in_loop": i, "ref": ref, "gt_box": gt_box,
         })
-        if i < 3 or (i+1) % 200 == 0 or i == n-1:
-            print(f"  [{i+1}/{n}] {ref[:40]!r}  IoU={sample_iou:.3f}  gen={gen[:60]!r}")
+    runner.flush()
+
+    results = state["results"]; ious = state["ious"]; parseable = state["parseable"]
 
     if not ious:
         print(f"  [skip] 0 个有效样本")
@@ -544,12 +684,14 @@ def eval_refcoco_split(model, image_processor, prompt_builder,
 # ============================================================================
 
 def eval_pope(model, image_processor, prompt_builder,
-              eval_root, n_samples, out_path):
+              eval_root, n_samples, out_path, batch_size=1):
     """POPE — 是非题幻觉测试。
 
     问题示例: "Is there a dog in the image?" → Yes / No
     指标: Accuracy / F1 / Yes-ratio
     Yes-ratio 偏离 50% 太多说明模型有 yes-bias 或 no-bias。
+
+    batch_size>1 时用 BatchedGenerationRunner 批量推理（4-5x 加速）。
     """
     from datasets import load_dataset
 
@@ -558,7 +700,7 @@ def eval_pope(model, image_processor, prompt_builder,
         print(f"[skip] POPE: {pope_dir} 不存在")
         return None
 
-    print(f"\n[task] POPE  (n_target={n_samples})")
+    print(f"\n[task] POPE  (n_target={n_samples}, batch_size={batch_size})")
     # POPE 通常只有 test split
     ds = None
     for split in ["test", "validation", "train"]:
@@ -577,11 +719,56 @@ def eval_pope(model, image_processor, prompt_builder,
     print(f"  数据加载: {len(ds)} 条，字段 {list(ds.features.keys())[:10]}")
 
     n = min(n_samples, len(ds))
-    tp = fp = tn = fn = 0
-    yes_count = unknown_count = 0
-    results = []
-    cat_stats = {}  # category 维度的细分（POPE 有 random/popular/adversarial）
+    # 用 dict 存可变状态以便闭包修改
+    state = {
+        "tp": 0, "fp": 0, "tn": 0, "fn": 0,
+        "yes_count": 0, "unknown_count": 0,
+        "results": [],
+        "cat_stats": {},
+    }
 
+    def consume(meta, gen):
+        idx = meta["idx"]
+        i_in_loop = meta["i_in_loop"]
+        question = meta["question"]
+        gt_label = meta["gt_label"]
+        category = meta["category"]
+
+        pred_label = detect_yes_no(gen)
+
+        cs = state["cat_stats"].setdefault(category, {
+            "tp": 0, "fp": 0, "tn": 0, "fn": 0,
+            "yes": 0, "n": 0, "unk": 0,
+        })
+        cs["n"] += 1
+        if pred_label == "yes":
+            state["yes_count"] += 1
+            cs["yes"] += 1
+            if gt_label == "yes":
+                state["tp"] += 1; cs["tp"] += 1
+            else:
+                state["fp"] += 1; cs["fp"] += 1
+        elif pred_label == "no":
+            if gt_label == "no":
+                state["tn"] += 1; cs["tn"] += 1
+            else:
+                state["fn"] += 1; cs["fn"] += 1
+        else:
+            state["unknown_count"] += 1
+            cs["unk"] += 1
+
+        state["results"].append({
+            "idx": idx, "question": question, "category": category,
+            "gt": gt_label, "pred": pred_label, "generated": gen,
+        })
+        if i_in_loop < 3 or (i_in_loop + 1) % 500 == 0 or i_in_loop == n - 1:
+            print(f"  [{i_in_loop+1}/{n}]  {category} Q={question[:50]!r}  GT={gt_label} → PRED={pred_label}")
+
+    # 用 BatchedGenerationRunner 收集 + 分发，batch_size=1 时也能 work（单样本）
+    runner = BatchedGenerationRunner(
+        model, image_processor, prompt_builder,
+        batch_size=batch_size, consumer=consume, max_new_tokens=10,
+    )
     for i in range(n):
         s = ds[i]
         img_field = s.get("image")
@@ -597,35 +784,16 @@ def eval_pope(model, image_processor, prompt_builder,
             continue
         category = s.get("category") or s.get("subset") or "all"
 
-        gen = chat_generate(model, image_processor, image, prompt_builder,
-                            question, max_new_tokens=10)
-        pred_label = detect_yes_no(gen)
-
-        cs = cat_stats.setdefault(category, {"tp": 0, "fp": 0, "tn": 0, "fn": 0,
-                                             "yes": 0, "n": 0, "unk": 0})
-        cs["n"] += 1
-        if pred_label == "yes":
-            yes_count += 1
-            cs["yes"] += 1
-            if gt_label == "yes":
-                tp += 1; cs["tp"] += 1
-            else:
-                fp += 1; cs["fp"] += 1
-        elif pred_label == "no":
-            if gt_label == "no":
-                tn += 1; cs["tn"] += 1
-            else:
-                fn += 1; cs["fn"] += 1
-        else:
-            unknown_count += 1
-            cs["unk"] += 1
-
-        results.append({
-            "idx": i+1, "question": question, "category": category,
-            "gt": gt_label, "pred": pred_label, "generated": gen,
+        runner.add(image, question, {
+            "idx": i + 1, "i_in_loop": i, "question": question,
+            "gt_label": gt_label, "category": category,
         })
-        if i < 3 or (i+1) % 500 == 0 or i == n-1:
-            print(f"  [{i+1}/{n}]  {category} Q={question[:50]!r}  GT={gt_label} → PRED={pred_label}")
+    runner.flush()
+
+    # 从 state 计算最终指标
+    tp = state["tp"]; fp = state["fp"]; tn = state["tn"]; fn = state["fn"]
+    yes_count = state["yes_count"]; unknown_count = state["unknown_count"]
+    cat_stats = state["cat_stats"]; results = state["results"]
 
     total = tp + fp + tn + fn
     if total == 0:
@@ -636,7 +804,6 @@ def eval_pope(model, image_processor, prompt_builder,
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0
     yes_ratio = yes_count / (total + unknown_count)
 
-    # 各 category 拆分
     cat_metrics = {}
     for cat, cs in cat_stats.items():
         ct = cs["tp"] + cs["fp"] + cs["tn"] + cs["fn"]
@@ -678,8 +845,11 @@ def eval_pope(model, image_processor, prompt_builder,
 # ============================================================================
 
 def eval_vqav2(model, image_processor, prompt_builder,
-               eval_root, n_samples, out_path):
-    """VQAv2 val 子集 — 标准 VQA accuracy（多答案投票）。"""
+               eval_root, n_samples, out_path, batch_size=1):
+    """VQAv2 val 子集 — 标准 VQA accuracy（多答案投票）。
+
+    batch_size>1 时用 BatchedGenerationRunner 批量推理。
+    """
     from datasets import load_dataset
 
     vqa_dir = Path(eval_root) / "vqav2"
@@ -687,7 +857,7 @@ def eval_vqav2(model, image_processor, prompt_builder,
         print(f"[skip] VQAv2: {vqa_dir} 不存在")
         return None
 
-    print(f"\n[task] VQAv2  (n_target={n_samples})")
+    print(f"\n[task] VQAv2  (n_target={n_samples}, batch_size={batch_size})")
     ds = None
     for split in ["validation", "val", "test", "train"]:
         try:
@@ -701,8 +871,27 @@ def eval_vqav2(model, image_processor, prompt_builder,
     print(f"  数据加载: {len(ds)} 条，字段 {list(ds.features.keys())[:10]}")
 
     n = min(n_samples, len(ds))
-    accs = []
-    results = []
+    state = {"accs": [], "results": []}
+
+    def consume(meta, gen):
+        i_in_loop = meta["i_in_loop"]
+        question = meta["question"]
+        gt_answers = meta["gt_answers"]
+        a = vqa_acc(gen, gt_answers)
+        state["accs"].append(a)
+        state["results"].append({
+            "idx": meta["idx"], "question": question,
+            "gt_answers": gt_answers[:5], "generated": gen,
+            "vqa_acc": round(a, 3),
+        })
+        if i_in_loop < 3 or (i_in_loop + 1) % 200 == 0 or i_in_loop == n - 1:
+            print(f"  [{i_in_loop+1}/{n}] Q={question[:50]!r}")
+            print(f"           GT={gt_answers[:3]}  GEN={gen[:40]!r}  acc={a:.2f}")
+
+    runner = BatchedGenerationRunner(
+        model, image_processor, prompt_builder,
+        batch_size=batch_size, consumer=consume, max_new_tokens=20,
+    )
     for i in range(n):
         s = ds[i]
         img_field = s.get("image")
@@ -714,7 +903,6 @@ def eval_vqav2(model, image_processor, prompt_builder,
             continue
         question = s.get("question") or ""
 
-        # GT answers 可能是 list[str] 或 list[{answer: str}]
         answers = s.get("answers") or s.get("answer") or []
         if isinstance(answers, list):
             gt_answers = []
@@ -729,19 +917,13 @@ def eval_vqav2(model, image_processor, prompt_builder,
         if not gt_answers:
             continue
 
-        gen = chat_generate(model, image_processor, image, prompt_builder,
-                            question, max_new_tokens=20)
-        a = vqa_acc(gen, gt_answers)
-        accs.append(a)
-        results.append({
-            "idx": i+1, "question": question,
-            "gt_answers": gt_answers[:5], "generated": gen,
-            "vqa_acc": round(a, 3),
+        runner.add(image, question, {
+            "idx": i + 1, "i_in_loop": i, "question": question,
+            "gt_answers": gt_answers,
         })
-        if i < 3 or (i+1) % 200 == 0 or i == n-1:
-            print(f"  [{i+1}/{n}] Q={question[:50]!r}")
-            print(f"           GT={gt_answers[:3]}  GEN={gen[:40]!r}  acc={a:.2f}")
+    runner.flush()
 
+    accs = state["accs"]; results = state["results"]
     if not accs:
         return None
     avg = sum(accs) / len(accs)
@@ -763,7 +945,7 @@ def eval_vqav2(model, image_processor, prompt_builder,
 # ============================================================================
 
 def eval_textvqa(model, image_processor, prompt_builder,
-                 eval_root, stage2_data_root, n_samples, out_path):
+                 eval_root, stage2_data_root, n_samples, out_path, batch_size=1):
     """TextVQA — 图像内文字识别 + 问答（OCR 类）。
 
     跟 VQAv2 类似，但问题都跟图中文字相关：
@@ -825,9 +1007,42 @@ def eval_textvqa(model, image_processor, prompt_builder,
             return None
 
     n = min(n_samples, len(ds))
-    accs = []
-    substr_matches = []
-    results = []
+    print(f"  batch_size={batch_size}")
+    state = {"accs": [], "substr_matches": [], "results": []}
+
+    def consume(meta, gen):
+        i_in_loop = meta["i_in_loop"]
+        question = meta["question"]
+        gt_answers = meta["gt_answers"]
+        a = vqa_acc(gen, gt_answers)
+        state["accs"].append(a)
+        # Substring match (OCR-friendly)
+        gen_norm = normalize_text(gen)
+        substr_hit = False
+        if gen_norm:
+            for g in gt_answers:
+                gn = normalize_text(g)
+                if not gn or len(gn) < 2:
+                    continue
+                if gn in gen_norm or gen_norm in gn:
+                    substr_hit = True
+                    break
+        state["substr_matches"].append(substr_hit)
+        state["results"].append({
+            "idx": meta["idx"], "question": question,
+            "gt_answers": gt_answers[:5], "generated": gen,
+            "vqa_acc": round(a, 3),
+            "substring_match": bool(substr_hit),
+        })
+        if i_in_loop < 3 or (i_in_loop + 1) % 200 == 0 or i_in_loop == n - 1:
+            print(f"  [{i_in_loop+1}/{n}] Q={question[:45]!r}")
+            print(f"           GT={gt_answers[:3]}  GEN={gen[:30]!r}  "
+                  f"acc={a:.2f} substr={substr_hit}")
+
+    runner = BatchedGenerationRunner(
+        model, image_processor, prompt_builder,
+        batch_size=batch_size, consumer=consume, max_new_tokens=20,
+    )
     for i in range(n):
         s = ds[i]
         img_field = s.get("image")
@@ -859,38 +1074,13 @@ def eval_textvqa(model, image_processor, prompt_builder,
         if not gt_answers:
             continue
 
-        gen = chat_generate(model, image_processor, image, prompt_builder,
-                            question, max_new_tokens=20)
-
-        # Standard VQA accuracy
-        a = vqa_acc(gen, gt_answers)
-        accs.append(a)
-
-        # Substring match (OCR-friendly):
-        # 模型答案 normalize 后，看是否含任一 GT 或被任一 GT 包含
-        gen_norm = normalize_text(gen)
-        substr_hit = False
-        if gen_norm:
-            for g in gt_answers:
-                gn = normalize_text(g)
-                if not gn or len(gn) < 2:
-                    continue
-                if gn in gen_norm or gen_norm in gn:
-                    substr_hit = True
-                    break
-        substr_matches.append(substr_hit)
-
-        results.append({
-            "idx": i+1, "question": question,
-            "gt_answers": gt_answers[:5], "generated": gen,
-            "vqa_acc": round(a, 3),
-            "substring_match": bool(substr_hit),
+        runner.add(image, question, {
+            "idx": i + 1, "i_in_loop": i, "question": question,
+            "gt_answers": gt_answers,
         })
-        if i < 3 or (i+1) % 200 == 0 or i == n-1:
-            print(f"  [{i+1}/{n}] Q={question[:45]!r}")
-            print(f"           GT={gt_answers[:3]}  GEN={gen[:30]!r}  "
-                  f"acc={a:.2f} substr={substr_hit}")
+    runner.flush()
 
+    accs = state["accs"]; substr_matches = state["substr_matches"]; results = state["results"]
     if not accs:
         return None
     avg = sum(accs) / len(accs)
@@ -1213,6 +1403,11 @@ def parse_args():
     # 其他
     ap.add_argument("--no_merge_lora", action="store_true",
                     help="不 merge LoRA 到 base（推理慢一点，但占显存少）")
+    ap.add_argument("--eval_batch_size", type=int, default=1,
+                    help="推理批大小。1=单样本（默认，最稳）；"
+                         "8 在 80GB+ GPU 上推荐（4-5× 加速）。"
+                         "应用于 RefCOCO/POPE/VQAv2/TextVQA；NoCaps + Stage1 regression "
+                         "继续单样本路径（长输出 batched 收益少且风险大）。")
     return ap.parse_args()
 
 
@@ -1249,6 +1444,7 @@ def main():
                 model, image_processor, prompt_builder,
                 args.stage2_data_root, split_name, args.n_refcoco,
                 out_dir / f"refcoco_{split_name}.json",
+                batch_size=args.eval_batch_size,
             )
             if r:
                 all_metrics[f"refcoco_{split_name}"] = r["metrics"]
@@ -1258,6 +1454,7 @@ def main():
         r = eval_pope(
             model, image_processor, prompt_builder,
             args.eval_data_root, args.n_pope, out_dir / "pope.json",
+            batch_size=args.eval_batch_size,
         )
         if r:
             all_metrics["pope"] = r["metrics"]
@@ -1267,6 +1464,7 @@ def main():
         r = eval_vqav2(
             model, image_processor, prompt_builder,
             args.eval_data_root, args.n_vqav2, out_dir / "vqav2.json",
+            batch_size=args.eval_batch_size,
         )
         if r:
             all_metrics["vqav2"] = r["metrics"]
@@ -1277,6 +1475,7 @@ def main():
             model, image_processor, prompt_builder,
             args.eval_data_root, args.stage2_data_root,
             args.n_textvqa, out_dir / "textvqa.json",
+            batch_size=args.eval_batch_size,
         )
         if r:
             all_metrics["textvqa"] = r["metrics"]
