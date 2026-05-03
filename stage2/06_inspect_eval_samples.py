@@ -250,11 +250,209 @@ h2.h-nocaps        { border-color: #10b981; color: #047857; }
 }
 .legend-box.gt::before    { border-color: #10b981; }
 .legend-box.pred::before  { border-color: #ef4444; }
+
+.overall {
+  background: white; border-radius: 12px; padding: 22px 26px;
+  box-shadow: 0 2px 8px rgba(15,23,42,0.05); margin-bottom: 24px;
+}
+.overall h2 {
+  background: transparent; padding: 0; margin: 0 0 12px;
+  border-left-width: 0; border-bottom: 2px solid #8b5cf6;
+  padding-bottom: 8px;
+}
+.overall h3 { font-size: 15px; margin: 12px 0 8px; color: #334155; }
+.setup-summary {
+  background: #f8fafc; padding: 10px 14px; border-radius: 6px;
+  font-size: 12px; line-height: 1.6;
+}
+.setup-summary code {
+  background: #fff; padding: 1px 5px; border-radius: 3px;
+  font-family: 'SF Mono', Monaco, monospace; font-size: 11px;
+}
+.metrics-table {
+  width: 100%; border-collapse: collapse; font-size: 12px;
+  margin: 4px 0 8px;
+}
+.metrics-table th, .metrics-table td {
+  padding: 6px 10px; text-align: left;
+  border-bottom: 1px solid #e2e8f0;
+}
+.metrics-table th {
+  background: #f1f5f9; color: #475569; font-weight: 600;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
+}
+.metrics-table tr:nth-child(even) { background: #fafbfc; }
+.metrics-table code {
+  background: #f1f5f9; padding: 1px 5px; border-radius: 3px;
+  font-family: 'SF Mono', Monaco, monospace; font-size: 11px;
+}
 """
 
 
 def html_escape(s):
     return html_mod.escape(str(s))
+
+
+# ============================================================================
+# SOTA 参考值（2024-2025 主流 VL 模型）
+# ============================================================================
+
+SOTA_REFERENCES = {
+    # task_id -> dict of {metric_key: {"ours_label": ..., "models": [...]}}
+    "refcoco_val": {
+        "acc@0.5": {
+            "ours_label": "Acc@0.5",
+            "models": [
+                ("LLaVA-1.5-7B",       "30%",   "7B 全参，无专项 grounding 训练"),
+                ("Shikra-7B",          "87%",   "7B 全参 + 专项 grounding"),
+                ("Qwen-VL-7B",         "88%",   "7B 全参，含动态分辨率 + 大量 grounding 数据"),
+                ("Qwen2.5-VL-72B",     "94%",   "72B 全参，SOTA"),
+                ("GPT-4o",             "80%",   "通用模型"),
+            ],
+        },
+    },
+    "refcoco_testA": {
+        "acc@0.5": {
+            "ours_label": "Acc@0.5",
+            "models": [
+                ("LLaVA-1.5-7B",       "32%",   "—"),
+                ("Qwen-VL-7B",         "92%",   "—"),
+                ("Qwen2.5-VL-72B",     "94%",   "SOTA"),
+            ],
+        },
+    },
+    "refcoco_testB": {
+        "acc@0.5": {
+            "ours_label": "Acc@0.5",
+            "models": [
+                ("LLaVA-1.5-7B",       "28%",   "—"),
+                ("Qwen-VL-7B",         "84%",   "—"),
+                ("Qwen2.5-VL-72B",     "91%",   "SOTA"),
+            ],
+        },
+    },
+    "pope": {
+        "f1": {
+            "ours_label": "F1",
+            "models": [
+                ("InstructBLIP-7B",    "85%",   "—"),
+                ("LLaVA-1.5-7B",       "86%",   "—"),
+                ("Qwen2-VL-72B",       "87%",   "—"),
+                ("InternVL2-26B",      "88%",   "—"),
+                ("GPT-4V",             "88-92%", "—"),
+            ],
+        },
+    },
+    "vqav2": {
+        "accuracy": {
+            "ours_label": "Accuracy",
+            "models": [
+                ("LLaVA-1.5-7B",       "78.5%", "7B 全参 SFT"),
+                ("Qwen-VL-7B",         "78.8%", "—"),
+                ("InternVL-1.0",       "79%",   "—"),
+                ("GPT-4o",             "82%",   "—"),
+                ("Qwen2.5-VL-72B",     "84%",   "SOTA"),
+            ],
+        },
+    },
+    "nocaps": {
+        # NoCaps 标准是 CIDEr 我们用 word_recall，无法直接比；备注用
+        "avg_gen_length": {
+            "ours_label": "avg_gen_length (词)",
+            "models": [
+                ("LLaVA-1.5-7B",       "~80",   "—"),
+                ("(SOTA 评测一般用 CIDEr)", "—", "我们用 word_recall 自定义指标，不可直比"),
+            ],
+        },
+    },
+}
+
+
+def fmt_metric_value(v, key):
+    """根据 metric key 决定如何格式化数字。"""
+    if isinstance(v, float):
+        if any(x in key for x in ("ratio", "acc", "rate", "@", "f1", "precision", "recall")):
+            return f"{v:.2%}"
+        return f"{v:.3f}"
+    return str(v)
+
+
+def render_overall_summary(summary_metrics, eval_out_dir_name, ckpt_step=None):
+    """生成顶部「整体结果 + SOTA 对比」section。"""
+    # 1) 整体指标 table
+    ours_rows = []
+    for task_id, metrics in summary_metrics.items():
+        if not isinstance(metrics, dict):
+            continue
+        for k, v in metrics.items():
+            if isinstance(v, (int, float, str)):
+                ours_rows.append(
+                    f"<tr><td>{html_escape(task_id)}</td>"
+                    f"<td><code>{html_escape(k)}</code></td>"
+                    f"<td><b>{html_escape(fmt_metric_value(v, k))}</b></td></tr>"
+                )
+
+    ours_table = f"""
+    <h3 style="margin-top:8px">📋 我们这次的全部指标</h3>
+    <table class="metrics-table">
+      <thead><tr><th>Task</th><th>Metric</th><th>Value</th></tr></thead>
+      <tbody>{"".join(ours_rows)}</tbody>
+    </table>"""
+
+    # 2) SOTA 对比 table（只针对主指标）
+    sota_rows = []
+    for task_id, metric_specs in SOTA_REFERENCES.items():
+        if task_id not in summary_metrics:
+            continue
+        ours_metrics = summary_metrics[task_id]
+        if not isinstance(ours_metrics, dict):
+            continue
+        for metric_key, spec in metric_specs.items():
+            if metric_key not in ours_metrics:
+                continue
+            ours_value = ours_metrics[metric_key]
+            ours_str = fmt_metric_value(ours_value, metric_key)
+            for model_name, sota_value, note in spec["models"]:
+                sota_rows.append(
+                    f"<tr>"
+                    f"<td>{html_escape(task_id)}</td>"
+                    f"<td>{html_escape(spec['ours_label'])}</td>"
+                    f"<td><b>{html_escape(ours_str)}</b></td>"
+                    f"<td>{html_escape(model_name)}</td>"
+                    f"<td>{html_escape(sota_value)}</td>"
+                    f"<td style='color:#64748b;font-size:11px'>{html_escape(note)}</td>"
+                    f"</tr>"
+                )
+
+    sota_table = f"""
+    <h3 style="margin-top:18px">🏆 vs 业界主流 VL 模型</h3>
+    <p style="font-size:12px;color:#64748b;margin:6px 0">
+      参考的都是 7B-72B 全参 finetune 模型；我们是 1.5B base + LoRA 18M-78M trainable，
+      参数量小 4-50×，训练数据少 1000-10000×，差距主要来自这两项。
+    </p>
+    <table class="metrics-table">
+      <thead><tr>
+        <th>Task</th><th>Metric</th><th>我们</th><th>对照模型</th><th>对照值</th><th>备注</th>
+      </tr></thead>
+      <tbody>{"".join(sota_rows)}</tbody>
+    </table>"""
+
+    # 3) 我们的 setup 摘要
+    step_str = f"step {ckpt_step}" if ckpt_step else "final"
+    setup_html = f"""
+    <div class="setup-summary">
+      <b>本次评测对象</b>: <code>{html_escape(eval_out_dir_name)}</code> ({step_str})<br>
+      <b>训练配置</b>: Qwen2.5-1.5B-Instruct + SigLIP2-SO400M + ProjectorWithNorm + LoRA<br>
+      <b>训练数据</b>: 详见 <code>stage2/README.md</code> 或 <code>stage2-v2/README.md</code>
+    </div>"""
+
+    return f"""
+    <div class="overall">
+      <h2 style="border-color:#8b5cf6;color:#6d28d9">📊 整体结果 + SOTA 对比</h2>
+      {setup_html}
+      {ours_table}
+      {sota_table}
+    </div>"""
 
 
 # ============================================================================
@@ -600,16 +798,11 @@ def main():
     if not sections_html:
         raise RuntimeError("没有生成任何 task section。检查 --eval_out_dir 是否含 *.json")
 
-    # 汇总
-    summary_table_rows = []
-    for task_id, m in summary_metrics.items():
-        cells = [task_id]
-        for k, v in m.items():
-            if isinstance(v, (int, float)) and ("acc" in k or "f1" in k or "ratio" in k or "rate" in k):
-                cells.append(f"{k}={v:.2%}" if isinstance(v, float) else f"{k}={v}")
-            elif isinstance(v, float):
-                cells.append(f"{k}={v:.3f}")
-        summary_table_rows.append(" · ".join(cells))
+    # 顶部「整体结果 + SOTA 对比」
+    ckpt_step = detect_step(eval_out_dir)
+    overall_html = render_overall_summary(
+        summary_metrics, eval_out_dir.name, ckpt_step=ckpt_step,
+    )
 
     page_html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -624,12 +817,14 @@ def main():
 <div class="container">
   <h1>🔍 Eval 抽样可视化 — {eval_out_dir.name}</h1>
   <div class="lead">
-    每个任务分层抽 <b>3 best · 4 random · 3 worst</b>。
+    上半部：整体指标 + 业界 SOTA 对比 ·
+    下半部：每个任务分层抽 <b>3 best · 4 random · 3 worst</b> 渲染卡片。<br>
     RefCOCO 卡片含 <span class="legend-box gt">GT 框</span>
     <span class="legend-box pred">预测框</span> 叠加显示。
-    <br>
-    源数据: {eval_out_dir}
   </div>
+
+  {overall_html}
+
   {''.join(sections_html)}
 </div>
 </body>
