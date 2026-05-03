@@ -94,11 +94,23 @@ def install_custom_projector(model, init_dir=None, dtype=None):
     from safetensors import safe_open  # noqa: PLC0415
 
     # 从 safetensors 抽出 multi_modal_projector.* 的权重
+    #
+    # 两种保存格式：
+    #   1) Stage 1 训练完的整体 ckpt：projector 权重混在 model*.safetensors / model.safetensors 里，
+    #      key 形如 'multi_modal_projector.linear_1.weight'，需按前缀过滤再剥前缀
+    #   2) Stage 2 中间 checkpoint-NNNN/multi_modal_projector.safetensors（由
+    #      ProjectorSaverCallback 单独保存）：key 已经是 'linear_1.weight' 形式（无前缀），
+    #      整文件就是 projector，全部直接装载即可
+    import os  # noqa: PLC0415
     proj_sd = {}
     for sf_file in glob.glob(f"{init_dir}/*.safetensors"):
+        is_projector_only = os.path.basename(sf_file) == "multi_modal_projector.safetensors"
         with safe_open(sf_file, framework="pt") as f:
             for key in f.keys():
-                if "multi_modal_projector" in key:
+                if is_projector_only:
+                    # 整文件就是 projector，无前缀，直接收
+                    proj_sd[key] = f.get_tensor(key)
+                elif "multi_modal_projector" in key:
                     stripped = key.split("multi_modal_projector.", 1)[1]
                     proj_sd[stripped] = f.get_tensor(key)
 

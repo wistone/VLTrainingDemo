@@ -291,21 +291,33 @@ def load_stage2_model(stage2_ckpt, stage1_ckpt, processor_dir=None,
 
     model = model.to(device).eval()
 
-    # 5. tokenizer + image_processor — 优先 processor_dir，fallback stage2 / stage1
+    # 5. tokenizer + image_processor — 分别独立寻找
+    #
+    # 中间 checkpoint-NNNN 通常只有 tokenizer (Trainer 通过 processing_class
+    # 自动存 tokenizer_config.json) 但没 image_processor (preprocessor_config.json
+    # 不在 Trainer 自动保存范围)。所以两者要分别 fallback。
     proc_candidates = [processor_dir, stage2_ckpt, stage1_ckpt]
-    proc_dir = None
-    for c in proc_candidates:
-        if c and (Path(c) / "tokenizer_config.json").exists():
-            proc_dir = c
-            break
-    if proc_dir is None:
+
+    def _find_dir(filename):
+        for c in proc_candidates:
+            if c and (Path(c) / filename).exists():
+                return c
+        return None
+
+    tokenizer_dir = _find_dir("tokenizer_config.json")
+    if tokenizer_dir is None:
         raise FileNotFoundError(
-            f"找不到 tokenizer。试过 {proc_candidates}，"
-            f"都没有 tokenizer_config.json"
+            f"找不到 tokenizer_config.json。试过 {proc_candidates}"
         )
-    print(f"[load] tokenizer + image_processor from {proc_dir}")
-    tokenizer = AutoTokenizer.from_pretrained(str(proc_dir))
-    image_processor = AutoImageProcessor.from_pretrained(str(proc_dir))
+    image_proc_dir = _find_dir("preprocessor_config.json")
+    if image_proc_dir is None:
+        raise FileNotFoundError(
+            f"找不到 preprocessor_config.json。试过 {proc_candidates}"
+        )
+    print(f"[load] tokenizer       from {tokenizer_dir}")
+    print(f"[load] image_processor from {image_proc_dir}")
+    tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_dir))
+    image_processor = AutoImageProcessor.from_pretrained(str(image_proc_dir))
 
     return model, tokenizer, image_processor
 
