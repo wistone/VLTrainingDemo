@@ -158,6 +158,7 @@ h2.h-refcoco_testA { border-color: #f97316; color: #c2410c; }
 h2.h-refcoco_testB { border-color: #eab308; color: #854d0e; }
 h2.h-pope          { border-color: #06b6d4; color: #0e7490; }
 h2.h-vqav2         { border-color: #3b82f6; color: #1e40af; }
+h2.h-textvqa       { border-color: #8b5cf6; color: #6d28d9; }
 h2.h-nocaps        { border-color: #10b981; color: #047857; }
 
 .task-summary {
@@ -352,6 +353,19 @@ SOTA_REFERENCES = {
                 ("InternVL-1.0",       "79%",   "—"),
                 ("GPT-4o",             "82%",   "—"),
                 ("Qwen2.5-VL-72B",     "84%",   "SOTA"),
+            ],
+        },
+    },
+    "textvqa": {
+        "accuracy": {
+            "ours_label": "VQA Accuracy",
+            "models": [
+                ("InstructBLIP-7B",    "50.7%", "—"),
+                ("LLaVA-1.5-7B",       "58.2%", "—"),
+                ("Qwen-VL-7B",         "63.1%", "—"),
+                ("GPT-4V",             "78%+",  "—"),
+                ("InternVL2-26B",      "79.2%", "—"),
+                ("Qwen2.5-VL-72B",     "84.7%", "SOTA"),
             ],
         },
     },
@@ -565,6 +579,42 @@ def render_vqav2_card(s, image, tier):
     </div>"""
 
 
+def render_textvqa_card(s, image, tier):
+    """TextVQA: 显示图 + OCR 类问题 + GT 答案 + 模型答案 + acc + substring 标记"""
+    img_b64 = to_b64_jpeg(image)
+    acc = s.get("vqa_acc", 0.0)
+    substr = s.get("substring_match", False)
+    # OCR 答案是短文本，substring 命中也算"基本对"
+    score_class = "high" if acc >= 0.5 else ("mid" if (acc > 0 or substr) else "low")
+    score_text = f"acc {acc:.2f}"
+    if substr and acc < 0.5:
+        score_text += " ✓sub"
+    gt_answers = s.get("gt_answers", [])
+    gt_str = " · ".join(html_escape(a) for a in gt_answers[:5])
+    return f"""
+    <div class="card tier-{tier}">
+      <div class="card-img-wrap">
+        <img src="data:image/jpeg;base64,{img_b64}" />
+        <div class="card-tag">#{s.get('idx')} · OCR</div>
+        <div class="card-score {score_class}">{score_text}</div>
+      </div>
+      <div class="card-body">
+        <div class="row q">
+          <div class="label">OCR QUESTION (需识别图中文字)</div>
+          <div class="text">{html_escape(s.get('question', ''))}</div>
+        </div>
+        <div class="row gt">
+          <div class="label">🟢 GT 答案</div>
+          <div class="text">{gt_str}</div>
+        </div>
+        <div class="row gen">
+          <div class="label">🔵 模型答</div>
+          <div class="text">{html_escape(s.get('generated', '')[:120])}</div>
+        </div>
+      </div>
+    </div>"""
+
+
 def render_nocaps_card(s, image, tier):
     """NoCaps: 显示图 + 模型生成长 caption + 3 个 reference + word_recall"""
     img_b64 = to_b64_jpeg(image)
@@ -676,7 +726,8 @@ TASK_CONFIG = {
     "refcoco_testB":  ("refcoco_testB.json", "iou", True, "📕 3. RefCOCO testB · grounding (主要是物体, 更难)", "refcoco"),
     "pope":           ("pope.json",          None,  None, "📗 4. POPE · 是非题幻觉测试", "pope"),
     "vqav2":          ("vqav2.json",         "vqa_acc", True, "📘 5. VQAv2 · 通用 VQA (acc 越高越好)", "vqav2"),
-    "nocaps":         ("nocaps.json",        "word_recall", True, "📙 6. NoCaps · 长 caption (word_recall 越高越好)", "nocaps"),
+    "textvqa":        ("textvqa.json",       "vqa_acc", True, "📒 6. TextVQA · OCR 类问答 (要识别图中文字)", "textvqa"),
+    "nocaps":         ("nocaps.json",        "word_recall", True, "📙 7. NoCaps · 长 caption (word_recall 越高越好)", "nocaps"),
 }
 
 
@@ -745,6 +796,13 @@ def main():
     pope_dir    = Path(args.eval_data_root)   / "pope"
     vqav2_dir   = Path(args.eval_data_root)   / "vqav2"
     nocaps_dir  = Path(args.eval_data_root)   / "nocaps"
+    # TextVQA 可能在 eval_data_root 或 stage2_data_root，按优先级试
+    textvqa_candidates = [
+        Path(args.eval_data_root)   / "textvqa",
+        Path(args.stage2_data_root) / "textvqa",
+    ]
+    textvqa_dir = next((p for p in textvqa_candidates if p.exists() and any(p.iterdir())),
+                       textvqa_candidates[0])
 
     sections_html = []
     summary_metrics = {}
@@ -776,6 +834,8 @@ def main():
             split = find_hf_split(pope_dir); ds_dir = pope_dir; render_fn = render_pope_card
         elif task_id == "vqav2":
             split = find_hf_split(vqav2_dir); ds_dir = vqav2_dir; render_fn = render_vqav2_card
+        elif task_id == "textvqa":
+            split = find_hf_split(textvqa_dir); ds_dir = textvqa_dir; render_fn = render_textvqa_card
         elif task_id == "nocaps":
             split = find_hf_split(nocaps_dir); ds_dir = nocaps_dir; render_fn = render_nocaps_card
         else:

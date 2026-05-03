@@ -727,6 +727,148 @@ def eval_vqav2(model, image_processor, prompt_builder,
 
 
 # ============================================================================
+# Task 3.5: TextVQA — OCR 类问答
+# ============================================================================
+
+def eval_textvqa(model, image_processor, prompt_builder,
+                 eval_root, stage2_data_root, n_samples, out_path):
+    """TextVQA — 图像内文字识别 + 问答（OCR 类）。
+
+    跟 VQAv2 类似，但问题都跟图中文字相关：
+      "What time is it on the clock?" → "11:45"
+      "What's the brand of phone?"     → "nokia"
+
+    数据源优先 eval_data_root/textvqa，找不到 fallback 到 stage2_data_root/textvqa
+    （v1 setup 把 TextVQA 下到了 stage2 数据目录，因为最初是想接进训练）。
+
+    指标:
+      accuracy            VQA-style: min(matches/3, 1.0)，对短文本严格
+      substring_match     宽松匹配：模型答案含任一 GT，或 GT 含模型答案
+                          OCR 任务里 substring 比 exact 更合适（"$5.99" vs "5.99"）
+    """
+    from datasets import load_dataset
+
+    candidates = []
+    if eval_root:
+        candidates.append(Path(eval_root) / "textvqa")
+    if stage2_data_root:
+        candidates.append(Path(stage2_data_root) / "textvqa")
+    tv_dir = None
+    for c in candidates:
+        if c and c.exists() and any(c.iterdir()):
+            tv_dir = c
+            break
+    if tv_dir is None:
+        print(f"[skip] TextVQA: 未在 {candidates} 找到")
+        return None
+
+    print(f"\n[task] TextVQA  (n_target={n_samples})")
+    print(f"  数据源: {tv_dir}")
+
+    ds = None
+    for split in ["validation", "val", "test", "train"]:
+        try:
+            ds = load_dataset(str(tv_dir), split=split, trust_remote_code=True)
+            print(f"  ✅ loaded split={split}, n={len(ds)}")
+            break
+        except Exception:
+            continue
+    if ds is None:
+        try:
+            ds_dict = load_dataset(str(tv_dir), trust_remote_code=True)
+            ds = ds_dict[list(ds_dict.keys())[0]]
+        except Exception as e:
+            print(f"  [skip] TextVQA 加载失败: {e}")
+            return None
+
+    n = min(n_samples, len(ds))
+    accs = []
+    substr_matches = []
+    results = []
+    for i in range(n):
+        s = ds[i]
+        img_field = s.get("image")
+        if isinstance(img_field, dict) and "bytes" in img_field:
+            try:
+                image = Image.open(io.BytesIO(img_field["bytes"])).convert("RGB")
+            except Exception:
+                continue
+        elif hasattr(img_field, "convert"):
+            image = img_field.convert("RGB")
+        else:
+            continue
+
+        question = (s.get("question") or s.get("query") or "").strip()
+        if not question:
+            continue
+
+        answers = s.get("answers") or s.get("answer") or []
+        if isinstance(answers, list):
+            gt_answers = []
+            for a in answers:
+                if isinstance(a, str):
+                    gt_answers.append(a)
+                elif isinstance(a, dict):
+                    gt_answers.append(a.get("answer") or a.get("text") or "")
+        else:
+            gt_answers = [str(answers)]
+        gt_answers = [a.strip() for a in gt_answers if isinstance(a, str) and a.strip()]
+        if not gt_answers:
+            continue
+
+        gen = chat_generate(model, image_processor, image, prompt_builder,
+                            question, max_new_tokens=20)
+
+        # Standard VQA accuracy
+        a = vqa_acc(gen, gt_answers)
+        accs.append(a)
+
+        # Substring match (OCR-friendly):
+        # 模型答案 normalize 后，看是否含任一 GT 或被任一 GT 包含
+        gen_norm = normalize_text(gen)
+        substr_hit = False
+        if gen_norm:
+            for g in gt_answers:
+                gn = normalize_text(g)
+                if not gn or len(gn) < 2:
+                    continue
+                if gn in gen_norm or gen_norm in gn:
+                    substr_hit = True
+                    break
+        substr_matches.append(substr_hit)
+
+        results.append({
+            "idx": i+1, "question": question,
+            "gt_answers": gt_answers[:5], "generated": gen,
+            "vqa_acc": round(a, 3),
+            "substring_match": bool(substr_hit),
+        })
+        if i < 3 or (i+1) % 200 == 0 or i == n-1:
+            print(f"  [{i+1}/{n}] Q={question[:45]!r}")
+            print(f"           GT={gt_answers[:3]}  GEN={gen[:30]!r}  "
+                  f"acc={a:.2f} substr={substr_hit}")
+
+    if not accs:
+        return None
+    avg = sum(accs) / len(accs)
+    substr_rate = sum(substr_matches) / len(substr_matches)
+    print(f"  [TextVQA] VQA acc={avg:.2%}  substring_match={substr_rate:.2%}  (n={len(accs)})")
+
+    summary = {
+        "task": "textvqa",
+        "n_evaluated": len(accs),
+        "metrics": {
+            "accuracy": avg,
+            "substring_match_rate": substr_rate,
+        },
+        "samples": results,
+    }
+    with open(out_path, "w") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    return summary
+
+
+# ============================================================================
 # Task 4: NoCaps 长 caption（覆盖 ShareGPT4V 训练目标）
 # ============================================================================
 
@@ -1014,14 +1156,16 @@ def parse_args():
                     help="每个 RefCOCO split 评测样本数")
     ap.add_argument("--n_pope", type=int, default=3000)
     ap.add_argument("--n_vqav2", type=int, default=1000)
+    ap.add_argument("--n_textvqa", type=int, default=1000,
+                    help="TextVQA OCR 类问答评测样本数")
     ap.add_argument("--n_nocaps", type=int, default=200,
                     help="NoCaps 长 caption 评测样本数（每张 200 token，慢）")
 
     # 跳过任务
     ap.add_argument("--skip", nargs="*", default=[],
-                    choices=["refcoco", "pope", "vqav2", "nocaps",
+                    choices=["refcoco", "pope", "vqav2", "textvqa", "nocaps",
                              "stage1_regression"],
-                    help="跳过指定评测")
+                    help="跳过指定评测；用 --skip refcoco pope vqav2 nocaps stage1_regression 可只跑 textvqa")
 
     # 其他
     ap.add_argument("--no_merge_lora", action="store_true",
@@ -1084,6 +1228,16 @@ def main():
         if r:
             all_metrics["vqav2"] = r["metrics"]
 
+    # ---- Task 3.5: TextVQA (OCR 类问答) ----
+    if "textvqa" not in args.skip:
+        r = eval_textvqa(
+            model, image_processor, prompt_builder,
+            args.eval_data_root, args.stage2_data_root,
+            args.n_textvqa, out_dir / "textvqa.json",
+        )
+        if r:
+            all_metrics["textvqa"] = r["metrics"]
+
     # ---- Task 4: NoCaps long caption ----
     if "nocaps" not in args.skip:
         r = eval_nocaps(
@@ -1128,14 +1282,31 @@ def main():
                 if r:
                     all_metrics["stage1_regression"] = r["metrics"]
 
-    # ---- 总结 ----
+    # ---- 总结：merge 进已有 summary.json ----
+    # 这样用 --skip 单独补一个新 task 时，不会覆盖之前任务的结果。
+    summary_path = out_dir / "summary.json"
+    merged = dict(all_metrics)
+    if summary_path.exists():
+        try:
+            with open(summary_path) as f:
+                old = json.load(f)
+            old_results = old.get("results", {})
+            # 旧的不在 all_metrics 里 → 保留
+            for k, v in old_results.items():
+                if k not in merged:
+                    merged[k] = v
+        except Exception as e:
+            print(f"[warn] 读旧 summary.json 失败 ({e})，新写入会覆盖。")
+
     summary = {
         "stage2_ckpt": str(args.stage2_ckpt),
         "stage1_ckpt": str(args.stage1_ckpt),
-        "results": all_metrics,
+        "results": merged,
     }
-    with open(out_dir / "summary.json", "w") as f:
+    with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
+    # 后续 print 用 merged 而非 all_metrics，反映完整状态
+    all_metrics = merged
 
     print("\n" + "=" * 70)
     print("=== Stage 2 OOD 评测完成 ===")
@@ -1156,6 +1327,7 @@ def main():
     print(f"  RefCOCO val Acc@0.5:  ~40-55%   (LLaVA-1.5-7B ~30%, Qwen-VL-7B ~88%)")
     print(f"  POPE F1:              ~70-80%   (LLaVA-1.5-7B ~86%)")
     print(f"  VQAv2 acc:            ~55-65%   (LLaVA-1.5-7B 78.5%)")
+    print(f"  TextVQA acc:          ~25-50%   (v1 没训预期 25-35%; v2 训过 40-50%; LLaVA-1.5-7B 58%)")
     print(f"  NoCaps avg_len:       30-80 词 (太短=没学会详细描述; 太长可能含重复)")
     print(f"  NoCaps word_recall:   25-45%   (跟 10 条 reference 的实义词覆盖)")
     print(f"  NoCaps rep_rate:      <10%     (长 caption 的最大隐患是 token 死循环)")
