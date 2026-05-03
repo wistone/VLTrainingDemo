@@ -43,12 +43,44 @@
 import argparse
 import io
 import json
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
-import torch
-from PIL import Image
+
+def _ensure_torchao_compat():
+    """同 03_train_stage2.py 的处理：Colab 预装 torchao 0.10 与 PEFT 不兼容。
+
+    PEFT 的 dispatch_torchao 检查 torchao 版本，0.16 以下硬 ImportError 不 fallback。
+    我们没用 torchao（量化加速库，跟 LoRA 推理无关），卸了让 PEFT 走标准 Linear 路径。
+    必须在 import peft 之前调用（确保 PEFT 内部检查时 torchao 已不可见）。
+    """
+    import importlib.util
+    if importlib.util.find_spec("torchao") is None:
+        return
+    try:
+        import torchao
+        from packaging import version
+        if version.parse(getattr(torchao, "__version__", "0.0.0")) >= version.parse("0.16.0"):
+            return
+    except Exception:
+        pass
+    print("[setup] 检测到旧版 torchao（与 PEFT 不兼容），卸载中...")
+    subprocess.run(
+        [sys.executable, "-m", "pip", "uninstall", "-y", "-q", "torchao"],
+        check=False, capture_output=True,
+    )
+    for mod in list(sys.modules):
+        if mod.startswith("torchao"):
+            del sys.modules[mod]
+
+
+_ensure_torchao_compat()
+
+import torch  # noqa: E402
+from PIL import Image  # noqa: E402
 
 
 # ============================================================================
