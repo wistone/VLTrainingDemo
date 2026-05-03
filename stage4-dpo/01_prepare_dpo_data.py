@@ -41,21 +41,28 @@ from pathlib import Path
 # ============================================================================
 
 DPO_SOURCES = {
-    "llava_rlhf_10k": {
+    # ⭐ RLAIF-V 是当前最活跃可用的多模态偏好数据集（替代 LLaVA-RLHF，原 repo 已下架）
+    "rlaif_v": {
         "candidates": [
-            ("zhiqings/LLaVA-RLHF-10K",        "dataset"),
-            ("zhiqings/LLaVA-RLHF",            "dataset"),    # alt name
-            ("liuhaotian/LLaVA-Human-Preference-10K", "dataset"),  # alt source
+            ("openbmb/RLAIF-V-Dataset",    "dataset"),
         ],
-        "approx_size_mb": 50,
-        "description": "LLaVA-RLHF 10K 偏好对 (推荐)",
+        "approx_size_mb": 8000,    # 约 8GB，含图片 bytes
+        "description": "RLAIF-V ~83K 偏好对（推荐，bundled 图片，已 chosen/rejected 化）",
     },
     "vlfeedback": {
         "candidates": [
             ("MMInstruction/VLFeedback",    "dataset"),
         ],
         "approx_size_mb": 5000,
-        "description": "VLFeedback ~80K 偏好对（多 VLM 来源）",
+        "description": "VLFeedback ~80K 偏好对（多 VLM 来源 + GPT-4V judge）",
+    },
+    # Silkie 是另一个备选，跟 VLFeedback 同系列
+    "silkie": {
+        "candidates": [
+            ("MMInstruction/Silkie",        "dataset"),
+        ],
+        "approx_size_mb": 3000,
+        "description": "Silkie ~80K 偏好对（VLFeedback 衍生）",
     },
 }
 
@@ -109,6 +116,63 @@ def download_with_fallback(source_key, target_dir):
 # ============================================================================
 # 格式标准化
 # ============================================================================
+
+def normalize_rlaif_v(records):
+    """RLAIF-V 字段适配。
+
+    HF openbmb/RLAIF-V-Dataset 字段:
+      ds_name             str   源数据集名 (llava-1.5/instructblip/...)
+      image               dict {"bytes": ..., "path": ...}
+      question            str   prompt
+      chosen              str   chosen response
+      rejected            str   rejected response
+      origin_dataset      str
+      origin_split        str
+      origin_split_inner_idx int
+      image_path          str
+
+    Image 直接 bundled 在 image["bytes"] 里，不需要额外查 COCO zip。
+    """
+    out = []
+    field_stats = Counter()
+
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        field_stats.update(r.keys())
+
+        question = r.get("question") or ""
+        chosen = r.get("chosen") or ""
+        rejected = r.get("rejected") or ""
+        if not (question and chosen and rejected):
+            continue
+        if chosen.strip() == rejected.strip():
+            continue
+
+        # image: bundled bytes
+        img_field = r.get("image")
+        image_bytes = None
+        image_path = r.get("image_path")
+        if isinstance(img_field, dict):
+            image_bytes = img_field.get("bytes")
+        # bytes 是 binary，存到 json 里要 base64 编码 — 留个标记，由 dataset 类负责加载
+        # 实际 dpo_pairs.json 里我们存 image_path（指向 cache 后的本地 PIL 文件 或 idx），
+        # 由训练时的 Dataset 类直接从 HF parquet 重新拉 image bytes。
+
+        out.append({
+            "prompt": question.strip(),
+            "chosen": chosen.strip(),
+            "rejected": rejected.strip(),
+            "image_path": image_path,
+            "image_id": None,
+            "ds_name": r.get("ds_name") or r.get("origin_dataset"),
+            # 关键：保留 idx，训练时直接 load_dataset() + ds[idx] 拿 image bytes
+            "_source": "rlaif_v",
+            "_source_idx": r.get("origin_split_inner_idx"),
+        })
+
+    return out, field_stats
+
 
 def normalize_llava_rlhf(records):
     """LLaVA-RLHF-10K 字段适配。
@@ -359,7 +423,9 @@ def main():
     ap.add_argument("--dpo_data_root", required=True,
                     help="存到哪，建议 /content/drive/MyDrive/qwenvl3/data/dpo")
     ap.add_argument("--include_vlfeedback", action="store_true",
-                    help="同时下 VLFeedback (~5GB，慢且未必需要)")
+                    help="额外加 VLFeedback (~5GB)")
+    ap.add_argument("--include_silkie", action="store_true",
+                    help="额外加 Silkie (~3GB)")
     ap.add_argument("--dry_run", action="store_true",
                     help="只检查 / 不真下数据")
     args = ap.parse_args()
@@ -373,10 +439,12 @@ def main():
     root.mkdir(parents=True, exist_ok=True)
     print(f"[init] DPO 数据根目录: {root}\n")
 
-    # 列要下的数据源
-    sources_to_get = ["llava_rlhf_10k"]
+    # 列要下的数据源（RLAIF-V 是新的主推荐源）
+    sources_to_get = ["rlaif_v"]
     if args.include_vlfeedback:
         sources_to_get.append("vlfeedback")
+    if args.include_silkie:
+        sources_to_get.append("silkie")
 
     successful_sources = []
     for src in sources_to_get:
@@ -406,9 +474,11 @@ def main():
         if not records:
             print(f"  [skip] {src}: 0 records")
             continue
-        if src.startswith("llava_rlhf"):
+        if src == "rlaif_v":
+            pairs, field_stats = normalize_rlaif_v(records)
+        elif src.startswith("llava_rlhf"):
             pairs, field_stats = normalize_llava_rlhf(records)
-        elif src == "vlfeedback":
+        elif src in ("vlfeedback", "silkie"):
             pairs, field_stats = normalize_vlfeedback(records)
         else:
             print(f"  [skip] {src}: 没有专用 normalizer")
