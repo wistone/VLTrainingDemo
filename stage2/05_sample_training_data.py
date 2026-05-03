@@ -1,4 +1,5 @@
-"""Stage 2 训练数据抽样可视化 — 3 个 task dataset 各 20 sample，生成自包含 HTML。
+"""Stage 2 训练数据抽样可视化 — 3 个 task dataset 各 20 sample（外加 1 个未参训的），
+生成自包含 HTML。
 
 帮助理解：
   1. 每个 dataset 是什么格式的 image-text pair（原始 JSON / HF 字段）
@@ -17,9 +18,17 @@
 
 == 数据集 ==
 
-  1. LLaVA-Instruct-150K  - 多轮 VQA + 推理；JSON 格式 {image, conversations}
-  2. RefCOCO              - 视觉定位（ref expr → bbox）；HF dataset
-  3. ShareGPT4V           - 长详细 caption；JSON 格式 {image, conversations}
+  实际投入训练（3 个）:
+    1. LLaVA-Instruct-150K  - 多轮 VQA + 推理；JSON 格式 {image, conversations}
+    2. RefCOCO              - 视觉定位（ref expr → bbox）；HF dataset
+    3. ShareGPT4V           - 长详细 caption；JSON 格式 {image, conversations}
+
+  下载了但未参训（仅用于 baseline eval）:
+    4. TextVQA              - OCR 类问答；HF dataset。原本想替代下载失败的 OCR-VQA
+                              进入训练，最后只接到 02_baseline_eval.py 用作评测对照。
+                              脚本会展示，但用浅色 + 标记"未投入训练"区分。
+
+  脚本通过 --skip 可跳过某个 section 加快速度。
 """
 import argparse
 import base64
@@ -198,6 +207,64 @@ def sample_sharegpt4v(json_path: Path, coco_loader: CocoZipLoader,
     return out
 
 
+def sample_textvqa(tv_dir: Path, n: int, seed: int):
+    """TextVQA — 下载了但训练未用。HF lmms-lab/textvqa 格式。
+
+    字段：image (PIL/bytes), question (str), answers (list[str], 多个标注员)。
+    """
+    from datasets import load_dataset
+    print(f"[textvqa] loading from {tv_dir}")
+    ds = None
+    for split in ["validation", "val", "train", "test"]:
+        try:
+            ds = load_dataset(str(tv_dir), split=split, trust_remote_code=True)
+            print(f"  using split={split}, total {len(ds)} samples")
+            break
+        except Exception:
+            continue
+    if ds is None:
+        try:
+            ds_dict = load_dataset(str(tv_dir), trust_remote_code=True)
+            ds = ds_dict[list(ds_dict.keys())[0]]
+            print(f"  using first available split, total {len(ds)} samples")
+        except Exception as e:
+            print(f"  [skip] TextVQA 加载失败: {e}")
+            return []
+
+    rng = random.Random(seed)
+    indices = rng.sample(range(len(ds)), min(n * 3, len(ds)))
+    out = []
+    for i in indices:
+        if len(out) >= n:
+            break
+        s = ds[i]
+        img_field = s.get("image")
+        if isinstance(img_field, dict) and "bytes" in img_field:
+            image = Image.open(io.BytesIO(img_field["bytes"])).convert("RGB")
+        elif hasattr(img_field, "convert"):
+            image = img_field.convert("RGB")
+        else:
+            continue
+
+        question = s.get("question") or s.get("query") or ""
+        answers = s.get("answers") or s.get("answer") or []
+        if isinstance(answers, str):
+            answers = [answers]
+        elif isinstance(answers, list):
+            answers = [a if isinstance(a, str) else (
+                a.get("answer") if isinstance(a, dict) else str(a)) for a in answers]
+        answers = [a for a in answers if a]
+
+        out.append({
+            "image": image,
+            "question": question,
+            "answers": answers,
+            "image_size": image.size,
+        })
+    print(f"  sampled: {len(out)}")
+    return out
+
+
 # ============================================================================
 # HTML 渲染
 # ============================================================================
@@ -219,6 +286,17 @@ h2 {
 h2.h-llava   { border-color: #3b82f6; color: #1e40af; }
 h2.h-refcoco { border-color: #ef4444; color: #b91c1c; }
 h2.h-sharegpt{ border-color: #10b981; color: #047857; }
+h2.h-textvqa {
+  border-color: #94a3b8; color: #475569;
+  background: linear-gradient(90deg, #f8fafc 0%, #f1f5f9 100%);
+}
+h2.h-textvqa::after {
+  content: "下载了但未投入训练 · 仅用于 eval baseline";
+  display: inline-block; margin-left: 12px;
+  background: #fef3c7; color: #92400e;
+  font-size: 11px; padding: 3px 9px; border-radius: 12px;
+  font-weight: 600; vertical-align: middle;
+}
 .lead { color: #475569; font-size: 14px; max-width: 920px; margin-bottom: 18px; }
 
 .intro {
@@ -439,6 +517,35 @@ def card_sharegpt4v(sample, idx) -> str:
     </div>"""
 
 
+def card_textvqa(sample, idx) -> str:
+    img_b64 = to_b64_jpeg(sample["image"])
+    answers_str = " / ".join(html_escape(a) for a in sample["answers"][:5])
+    n_more = max(0, len(sample["answers"]) - 5)
+    if n_more:
+        answers_str += f" <span style='color:#94a3b8'>(+{n_more} more)</span>"
+    return f"""
+    <div class="card" style="opacity:0.92">
+      <div class="card-img-wrap">
+        <img src="data:image/jpeg;base64,{img_b64}" alt="textvqa sample {idx}" />
+        <div class="card-tag">#{idx} {sample['image_size'][0]}×{sample['image_size'][1]}</div>
+      </div>
+      <div class="card-body">
+        <div class="card-meta">TextVQA · OCR 类问答（10 个标注员答案投票）</div>
+        <div class="turn turn-user">
+          <div class="role">👤 USER (假设投训会被 mask)</div>
+          <div class="content">
+            <span class="img-token">&lt;image&gt; ×{NUM_IMAGE_TOKENS}</span>
+            <br>{html_escape(sample['question'])}
+          </div>
+        </div>
+        <div class="turn" style="background:#fef3c7;border-color:#f59e0b">
+          <div class="role" style="color:#92400e">📝 GT ANSWERS (训练时本应是 loss 部分)</div>
+          <div class="content">{answers_str}</div>
+        </div>
+      </div>
+    </div>"""
+
+
 def render_template_demo() -> str:
     """展示 ChatFormatter 把单 turn 包装成 chat 格式的过程。"""
     return """
@@ -454,10 +561,14 @@ What is the man wearing?
 """
 
 
-def render_html(llava_samples, refcoco_samples, sharegpt_samples, ckpt_info=""):
+def render_html(llava_samples, refcoco_samples, sharegpt_samples,
+                textvqa_samples=None, ckpt_info=""):
     llava_cards = "\n".join(card_llava(s, i+1) for i, s in enumerate(llava_samples))
     refcoco_cards = "\n".join(card_refcoco(s, i+1) for i, s in enumerate(refcoco_samples))
     sharegpt_cards = "\n".join(card_sharegpt4v(s, i+1) for i, s in enumerate(sharegpt_samples))
+    textvqa_cards = ""
+    if textvqa_samples:
+        textvqa_cards = "\n".join(card_textvqa(s, i+1) for i, s in enumerate(textvqa_samples))
     template_demo = render_template_demo()
 
     return f"""<!DOCTYPE html>
@@ -488,6 +599,44 @@ def render_html(llava_samples, refcoco_samples, sharegpt_samples, ckpt_info=""):
     </p>
     {template_demo}
   </div>
+
+  <h2 style="border:none;background:transparent;padding:0;margin:24px 0 8px;font-size:18px">
+    📦 数据集总览
+  </h2>
+  <table style="width:100%;border-collapse:collapse;margin-bottom:24px;font-size:13px;background:white;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(15,23,42,0.04)">
+    <thead style="background:#f8fafc">
+      <tr><th style="padding:10px 14px;text-align:left">#</th>
+          <th style="padding:10px 14px;text-align:left">数据集</th>
+          <th style="padding:10px 14px;text-align:left">解决问题</th>
+          <th style="padding:10px 14px;text-align:left">投入训练？</th></tr>
+    </thead>
+    <tbody>
+      <tr style="border-top:1px solid #e2e8f0">
+        <td style="padding:8px 14px">1</td>
+        <td style="padding:8px 14px">LLaVA-Instruct-150K</td>
+        <td style="padding:8px 14px">VQA + 推理 + 多轮对话</td>
+        <td style="padding:8px 14px;color:#15803d;font-weight:600">✅ 是</td>
+      </tr>
+      <tr style="border-top:1px solid #e2e8f0">
+        <td style="padding:8px 14px">2</td>
+        <td style="padding:8px 14px">RefCOCO</td>
+        <td style="padding:8px 14px">视觉定位 (ref → bbox)</td>
+        <td style="padding:8px 14px;color:#15803d;font-weight:600">✅ 是</td>
+      </tr>
+      <tr style="border-top:1px solid #e2e8f0">
+        <td style="padding:8px 14px">3</td>
+        <td style="padding:8px 14px">ShareGPT4V</td>
+        <td style="padding:8px 14px">详细长 caption</td>
+        <td style="padding:8px 14px;color:#15803d;font-weight:600">✅ 是</td>
+      </tr>
+      <tr style="border-top:1px solid #e2e8f0;background:#fffbeb">
+        <td style="padding:8px 14px">4</td>
+        <td style="padding:8px 14px">TextVQA</td>
+        <td style="padding:8px 14px">OCR 类问答（图里的文字）</td>
+        <td style="padding:8px 14px;color:#92400e;font-weight:600">❌ 否（仅 eval baseline 用）</td>
+      </tr>
+    </tbody>
+  </table>
 
   <h2 class="h-llava">📘 1. LLaVA-Instruct-150K · 多轮 VQA + 推理</h2>
   <div class="dataset-intro">
@@ -536,6 +685,24 @@ def render_html(llava_samples, refcoco_samples, sharegpt_samples, ckpt_info=""):
   <div class="grid">
     {sharegpt_cards}
   </div>
+
+  {("<h2 class='h-textvqa'>📒 4. TextVQA · OCR 类问答</h2>"
+    "<div class='dataset-intro' style='background:#fffbeb;border-left:3px solid #f59e0b'>"
+    "<h3>本来的设计目的</h3>"
+    "教模型读图里的文字（路牌、招牌、商品标签等）并回答相关问题。"
+    "原计划顶替下载失败的 OCR-VQA 进入训练，但最终代码 (<code>03_train_stage2.py "
+    "build_task_datasets()</code>) 里没接上，所以 <b>此数据集没参与训练</b>，"
+    "仅在 <code>02_baseline_eval.py</code> 里用作评测对照。<br><br>"
+    "<b>意味着</b>：当前 Stage 2 模型对图中文字的识别能力，主要靠 LLaVA-Instruct 里"
+    "顺带的 OCR 问答 + ShareGPT4V 长描述里偶尔提到的文字训练而成，<b>没有专项 OCR 任务</b>。"
+    "<div class='meta'>"
+    "<span>n 下载 ≈ 35K val</span>"
+    "<span>图源: 自带 (含文字图)</span>"
+    "<span>10 个标注员答案投票</span>"
+    "<span style='background:#fed7aa;color:#92400e'>未投入训练</span>"
+    "</div></div>"
+    "<div class='grid'>" + textvqa_cards + "</div>"
+   ) if textvqa_cards else ""}
 </div>
 </body>
 </html>
@@ -549,11 +716,14 @@ def render_html(llava_samples, refcoco_samples, sharegpt_samples, ckpt_info=""):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage2_data_root", required=True,
-                    help="Stage 2 数据根目录，含 llava_instruct/, refcoco/, sharegpt4v/, coco/")
+                    help="Stage 2 数据根目录，含 llava_instruct/, refcoco/, sharegpt4v/, coco/, "
+                         "textvqa/")
     ap.add_argument("--output", required=True,
                     help="输出 HTML 路径，建议 Drive: /content/drive/MyDrive/qwenvl3/data_samples/stage2_training_data.html")
     ap.add_argument("--n_per_dataset", type=int, default=20)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--skip_textvqa", action="store_true",
+                    help="跳过 TextVQA section（如果你没下或想加快）")
     args = ap.parse_args()
 
     data_root = Path(args.stage2_data_root)
@@ -584,8 +754,18 @@ def main():
         sg_jsons[0], coco_loader, args.n_per_dataset, args.seed,
     )
 
+    # 4. TextVQA（下载了但训练没用，仅展示）
+    textvqa_samples = None
+    if not args.skip_textvqa:
+        tv_dir = data_root / "textvqa"
+        if tv_dir.exists() and any(tv_dir.iterdir()):
+            textvqa_samples = sample_textvqa(tv_dir, args.n_per_dataset, args.seed)
+        else:
+            print(f"[textvqa] 跳过：目录不存在或为空 ({tv_dir})")
+
     # 渲染 HTML
-    html = render_html(llava_samples, refcoco_samples, sharegpt_samples)
+    html = render_html(llava_samples, refcoco_samples, sharegpt_samples,
+                       textvqa_samples=textvqa_samples)
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
