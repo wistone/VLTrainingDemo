@@ -39,6 +39,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Dict
 
 
 def _ensure_torchao_compat():
@@ -198,10 +199,19 @@ class DPOTrainerCustom(Trainer):
     """HF Trainer 子类，覆盖 compute_loss 实现 DPO。
 
     Reference model = PEFT disable_adapter (base only)，跟 active 共用 base weights。
+
+    日志策略：
+      - compute_loss 每 micro-batch 调一次（grad_accum=8 时一个 opt step 调 8 次）
+      - 我们累积 metric，**每 grad_accum 个 micro-batch 取平均后用单行输出**
+      - 进一步用 logging_steps 节流（默认 5 步打一次）
     """
     def __init__(self, *args, beta=0.1, **kwargs):
         super().__init__(*args, **kwargs)
         self.beta = beta
+        # metric accumulator - 累积 grad_accum 个 micro-batch 的指标
+        self._dpo_metric_accum: Dict[str, float] = {}
+        self._dpo_metric_count: int = 0
+        self._dpo_loss_accum: float = 0.0
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         # 1. Active forward (with LoRA)
@@ -245,10 +255,37 @@ class DPOTrainerCustom(Trainer):
             beta=self.beta,
         )
 
-        # 4. Log metrics 到 trainer 状态（自动 wandb / log）
-        if self.state.is_world_process_zero:
-            for k, v in metrics.items():
-                self.log({k: v.item() if isinstance(v, torch.Tensor) else float(v)})
+        # 4. 累积 metric (跨 grad_accum 个 micro-batch)
+        for k, v in metrics.items():
+            val = v.item() if isinstance(v, torch.Tensor) else float(v)
+            self._dpo_metric_accum[k] = self._dpo_metric_accum.get(k, 0.0) + val
+        self._dpo_loss_accum += loss.item() if isinstance(loss, torch.Tensor) else float(loss)
+        self._dpo_metric_count += 1
+
+        # 5. 当攒够 grad_accum 个时（= 一个 optimizer step 边界），整理输出
+        ga = max(1, self.args.gradient_accumulation_steps)
+        if self._dpo_metric_count >= ga:
+            if self.state.is_world_process_zero:
+                # 算平均
+                avg_metrics = {k: v / self._dpo_metric_count
+                               for k, v in self._dpo_metric_accum.items()}
+                avg_loss = self._dpo_loss_accum / self._dpo_metric_count
+                # 节流：只在 logging_steps 边界打
+                # state.global_step 还没增（在 trainer 内部 backward 之后才 +1）
+                upcoming_step = self.state.global_step + 1
+                if upcoming_step % self.args.logging_steps == 0 or upcoming_step == 1:
+                    log_dict = {
+                        "dpo/loss": round(avg_loss, 4),
+                        "dpo/acc": round(avg_metrics.get("rewards/accuracies", 0), 3),
+                        "dpo/margin": round(avg_metrics.get("rewards/margins", 0), 3),
+                        "dpo/r_chosen": round(avg_metrics.get("rewards/chosen", 0), 3),
+                        "dpo/r_rejected": round(avg_metrics.get("rewards/rejected", 0), 3),
+                    }
+                    self.log(log_dict)
+            # 重置 buffer
+            self._dpo_metric_accum = {}
+            self._dpo_metric_count = 0
+            self._dpo_loss_accum = 0.0
 
         return (loss, None) if return_outputs else loss
 
