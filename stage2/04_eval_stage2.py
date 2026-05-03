@@ -4,11 +4,12 @@
   - 02_baseline_eval：训练前 baseline，从训练集中抽样（in-distribution，不严谨）
   - 04_eval_stage2：训练后正式评测，全部用 OOD 公开 benchmark（严谨可对比）
 
-覆盖 4 个评测任务：
+覆盖 5 个评测任务（输出长度从短到长）：
   1. RefCOCO val/testA/testB    grounding，IoU@0.5/IoU@0.7/mean IoU         ⭐ 主指标（天然 held-out）
   2. POPE                       幻觉测试，Yes/No 二分类，F1 / Acc / Yes-ratio  ⭐ 诚实度
   3. VQAv2 val 子集             通用 VQA，标准 VQA accuracy                  ⭐ 通用能力
-  4. Stage 1 holdout 回归       caption 长度 + token 重复率                  ⭐ 防灾难性遗忘
+  4. NoCaps 长 caption          OOD 长描述（覆盖 ShareGPT4V 训练目标）        ⭐ 长 caption 能力
+  5. Stage 1 holdout 回归       短 caption 长度 + token 重复率              ⭐ 防灾难性遗忘
 
 == 模型加载流程 ==
   Stage 2 ckpt 目录里只有：
@@ -714,7 +715,187 @@ def eval_vqav2(model, image_processor, prompt_builder,
 
 
 # ============================================================================
-# Task 4: Stage 1 holdout 回归测试（防灾难性遗忘）
+# Task 4: NoCaps 长 caption（覆盖 ShareGPT4V 训练目标）
+# ============================================================================
+
+def eval_nocaps(model, image_processor, prompt_builder,
+                eval_root, n_samples, out_path):
+    """NoCaps long detailed caption — OOD 长 caption 评测。
+
+    针对 ShareGPT4V 训练目标 (Stage 2 学的"详细描述图像")。
+
+    NoCaps 三档难度（domain 字段）:
+      - in-domain      COCO 已有的物体类别
+      - near-domain    部分 COCO 物体 + 部分新物体
+      - out-of-domain  完全是 COCO 没见过的类别 ← 真正测泛化
+
+    每张图有 10 条 reference caption。
+    评测指标（不依赖 java/CIDEr 库）:
+      - avg_gen_length         平均生成长度（词）— 期望 30-80 词
+      - repetition_rate        token 死循环率 — 长 caption 的最大隐患
+      - avg_word_recall        词级召回（gen 覆盖了多少 reference 中的实义词）
+      - distinct_word_ratio    词汇多样性（去重词数 / 总词数）
+      - by_domain              三档难度分别的指标
+    """
+    from datasets import load_dataset
+
+    nc_dir = Path(eval_root) / "nocaps"
+    if not nc_dir.exists():
+        print(f"[skip] NoCaps: {nc_dir} 不存在")
+        return None
+
+    print(f"\n[task] NoCaps long caption  (n_target={n_samples})")
+    ds = None
+    for split in ["validation", "val", "test"]:
+        try:
+            ds = load_dataset(str(nc_dir), split=split, trust_remote_code=True)
+            break
+        except Exception:
+            continue
+    if ds is None:
+        try:
+            ds_dict = load_dataset(str(nc_dir), trust_remote_code=True)
+            ds = ds_dict[list(ds_dict.keys())[0]]
+        except Exception as e:
+            print(f"  [skip] NoCaps 加载失败: {e}")
+            return None
+    print(f"  数据加载: {len(ds)} 条，字段 {list(ds.features.keys())[:10]}")
+
+    n = min(n_samples, len(ds))
+    results = []
+    lengths = []
+    rep_count = 0
+    word_recalls = []
+    domain_stats = {}  # domain -> {lens: [], recalls: [], rep: int}
+
+    for i in range(n):
+        s = ds[i]
+        # ---- image ----
+        img_field = s.get("image")
+        if isinstance(img_field, dict) and "bytes" in img_field:
+            image = Image.open(io.BytesIO(img_field["bytes"])).convert("RGB")
+        elif hasattr(img_field, "convert"):
+            image = img_field.convert("RGB")
+        else:
+            continue
+
+        # ---- 10 个 reference caption ----
+        refs = (s.get("annotations_captions") or s.get("references") or
+                s.get("captions") or s.get("answer") or [])
+        if isinstance(refs, str):
+            refs = [refs]
+        if isinstance(refs, list) and refs and isinstance(refs[0], dict):
+            refs = [r.get("caption") or r.get("text") or "" for r in refs]
+        refs = [r for r in refs if r and isinstance(r, str)]
+        if not refs:
+            continue
+
+        domain = s.get("domain") or s.get("subset") or "all"
+
+        # ---- 生成长 caption ----
+        gen = chat_generate(model, image_processor, image, prompt_builder,
+                            "Describe this image in detail.", max_new_tokens=200)
+        words = gen.split()
+        word_count = len(words)
+        lengths.append(word_count)
+
+        # 死循环检测
+        is_rep, max_run = detect_repetition(gen)
+        if is_rep:
+            rep_count += 1
+
+        # 词级召回（实义词 = 长度 >=4 的词，去掉冠词副词）
+        gen_set = set(normalize_text(gen).split())
+        gen_set = {w for w in gen_set if len(w) >= 4}
+        all_ref_set = set()
+        for ref in refs:
+            for w in normalize_text(ref).split():
+                if len(w) >= 4:
+                    all_ref_set.add(w)
+        recall = (len(gen_set & all_ref_set) / len(all_ref_set)
+                  if all_ref_set else 0.0)
+        word_recalls.append(recall)
+
+        # 累积到 by-domain 统计
+        ds_stat = domain_stats.setdefault(
+            domain, {"lens": [], "recalls": [], "rep": 0, "n": 0}
+        )
+        ds_stat["lens"].append(word_count)
+        ds_stat["recalls"].append(recall)
+        ds_stat["n"] += 1
+        if is_rep:
+            ds_stat["rep"] += 1
+
+        results.append({
+            "idx": i+1, "domain": domain,
+            "references": refs[:3],   # 只存前 3 条参考供查看
+            "n_references": len(refs),
+            "generated": gen,
+            "gen_length": word_count,
+            "max_run": max_run, "repetition": is_rep,
+            "word_recall": round(recall, 3),
+        })
+        if i < 3 or (i+1) % 100 == 0 or i == n-1:
+            ref_len = sum(len(r.split()) for r in refs) // len(refs)
+            print(f"  [{i+1}/{n}] [{domain}]  gt_len_avg={ref_len} gen_len={word_count} "
+                  f"recall={recall:.2f} rep={is_rep}")
+            if i < 3:
+                print(f"    Ref0: {refs[0][:100]}")
+                print(f"    GEN:  {gen[:120]}")
+
+    if not lengths:
+        return None
+
+    n_eval = len(lengths)
+    avg_len = sum(lengths) / n_eval
+    rep_rate = rep_count / n_eval
+    avg_recall = sum(word_recalls) / n_eval
+
+    # 词汇多样性: 全部生成的词，去重 / 总数
+    all_gen_words = []
+    for r in results:
+        all_gen_words.extend(r["generated"].lower().split())
+    distinct_ratio = (len(set(all_gen_words)) / len(all_gen_words)
+                      if all_gen_words else 0)
+
+    # by-domain 汇总
+    by_domain = {}
+    for d, st in domain_stats.items():
+        if st["n"] == 0:
+            continue
+        by_domain[d] = {
+            "n": st["n"],
+            "avg_len": sum(st["lens"]) / st["n"],
+            "avg_recall": sum(st["recalls"]) / st["n"],
+            "repetition_rate": st["rep"] / st["n"],
+        }
+
+    print(f"\n  [NoCaps]  avg_len={avg_len:.1f} words  "
+          f"rep_rate={rep_rate:.2%}  word_recall={avg_recall:.2%}")
+    print(f"            distinct_ratio={distinct_ratio:.2%}  (n={n_eval})")
+    for d, m in by_domain.items():
+        print(f"    [{d:14s}] n={m['n']:4d} len={m['avg_len']:5.1f} "
+              f"recall={m['avg_recall']:.2%} rep={m['repetition_rate']:.2%}")
+
+    summary = {
+        "task": "nocaps",
+        "n_evaluated": n_eval,
+        "metrics": {
+            "avg_gen_length": avg_len,
+            "repetition_rate": rep_rate,
+            "avg_word_recall": avg_recall,
+            "distinct_word_ratio": distinct_ratio,
+        },
+        "by_domain": by_domain,
+        "samples": results,
+    }
+    with open(out_path, "w") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    return summary
+
+
+# ============================================================================
+# Task 5: Stage 1 holdout 回归测试（防灾难性遗忘）
 # ============================================================================
 
 def eval_stage1_regression(model, image_processor, prompt_builder,
@@ -821,10 +1002,13 @@ def parse_args():
                     help="每个 RefCOCO split 评测样本数")
     ap.add_argument("--n_pope", type=int, default=3000)
     ap.add_argument("--n_vqav2", type=int, default=1000)
+    ap.add_argument("--n_nocaps", type=int, default=200,
+                    help="NoCaps 长 caption 评测样本数（每张 200 token，慢）")
 
     # 跳过任务
     ap.add_argument("--skip", nargs="*", default=[],
-                    choices=["refcoco", "pope", "vqav2", "stage1_regression"],
+                    choices=["refcoco", "pope", "vqav2", "nocaps",
+                             "stage1_regression"],
                     help="跳过指定评测")
 
     # 其他
@@ -888,7 +1072,18 @@ def main():
         if r:
             all_metrics["vqav2"] = r["metrics"]
 
-    # ---- Task 4: Stage 1 regression ----
+    # ---- Task 4: NoCaps long caption ----
+    if "nocaps" not in args.skip:
+        r = eval_nocaps(
+            model, image_processor, prompt_builder,
+            args.eval_data_root, args.n_nocaps, out_dir / "nocaps.json",
+        )
+        if r:
+            all_metrics["nocaps"] = r["metrics"]
+            if "by_domain" in r:
+                all_metrics["nocaps_by_domain"] = r["by_domain"]
+
+    # ---- Task 5: Stage 1 regression ----
     if "stage1_regression" not in args.skip:
         # 找 holdout_20.json
         candidates = []
@@ -949,6 +1144,9 @@ def main():
     print(f"  RefCOCO val Acc@0.5:  ~40-55%   (LLaVA-1.5-7B ~30%, Qwen-VL-7B ~88%)")
     print(f"  POPE F1:              ~70-80%   (LLaVA-1.5-7B ~86%)")
     print(f"  VQAv2 acc:            ~55-65%   (LLaVA-1.5-7B 78.5%)")
+    print(f"  NoCaps avg_len:       30-80 词 (太短=没学会详细描述; 太长可能含重复)")
+    print(f"  NoCaps word_recall:   25-45%   (跟 10 条 reference 的实义词覆盖)")
+    print(f"  NoCaps rep_rate:      <10%     (长 caption 的最大隐患是 token 死循环)")
     print(f"  stage1 rep_rate:      <15%      (Stage 1 ckpt-11500 ≈ 10%)")
 
 
