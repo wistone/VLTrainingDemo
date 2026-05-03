@@ -25,6 +25,25 @@
 - 大胜的项目（RefCOCO/TextVQA）：`SigLIP2 + 充足训练数据 + LoRA r=64` 三者协同
 - 短板的项目（VQAv2）：`1.5B LLM 推理深度限制 + 没直接 expose VQAv2 train + LLaVA-Instruct 被稀释` 三者叠加
 
+### ⚠️ 关于 VQAv2 22 点 gap 的"不公平对比"修正
+
+**重要事实**：我们 v1/v2 训练 mix **从未包含 VQAv2 train**。56.5% 是纯 zero-shot 测试。
+而 LLaVA-1.5-7B 的 78.5% 来自**训过 VQAv2 train 的同分布测试**（LLaVA-1.5 mix 665K 含 VQAv2）。
+
+| 模型 | VQAv2 train 暴露 | VQAv2 val 分数 | 测试性质 |
+|---|---|---|---|
+| **我们 v2** | ❌ **从未** | **56.5%** | **纯 zero-shot OOD** |
+| LLaVA-1.5-7B | ✅ 训过 | 78.5% | half-in-distribution |
+| Qwen-VL-7B | ✅ 训过 | 78.8% | 同上 |
+
+**22 点 gap 的更准确分解**：
+- **~10 点来自 train data 暴露的 fairness**（LLaVA-1.5 见过同分布数据，我们没有）
+- **~10-12 点来自 LLM 容量** (1.5B vs 7B)
+- **~2 点来自其他数据多样性**
+
+**implication for Stage 3**：加 VQAv2 train 直接消除 fairness gap，预期能从 56.5% 跳到 70-75%（+14-18 点），追平甚至接近 LLaVA-1.5-7B（不需要换 7B 模型）。
+真正受 LLM 容量限制的部分是 75% 之上的几个点，那才需要换 3B+ 模型才能突破。
+
 ---
 
 ## 🎯 目标（v2 数据修订版）：专攻 VQA + 修 yes-bias，保住其他
