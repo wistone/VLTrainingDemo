@@ -780,18 +780,29 @@ def eval_textvqa(model, image_processor, prompt_builder,
     """
     from datasets import load_dataset
 
+    # 注意：v1 的 01_prepare_data.py 把 TextVQA 下到了 stage2_data_root/textvqa/，
+    # 不是 eval_data_root/textvqa/。所以**优先**找 stage2 下的，再 fallback eval 下的。
     candidates = []
-    if eval_root:
-        candidates.append(Path(eval_root) / "textvqa")
     if stage2_data_root:
-        candidates.append(Path(stage2_data_root) / "textvqa")
+        candidates.append(Path(stage2_data_root) / "textvqa")  # ← 优先
+    if eval_root:
+        candidates.append(Path(eval_root) / "textvqa")          # ← fallback
     tv_dir = None
     for c in candidates:
-        if c and c.exists() and any(c.iterdir()):
-            tv_dir = c
-            break
+        if c is None:
+            continue
+        # path.exists() 在 Drive 挂载断开时会抛 OSError 107，必须包 try
+        try:
+            if c.exists() and any(c.iterdir()):
+                tv_dir = c
+                print(f"  [textvqa] 数据源: {tv_dir}")
+                break
+        except OSError as e:
+            print(f"  [warn] 检查 {c} 失败 ({e})。"
+                  f"如果是 Drive 挂载断开，跑 drive.mount(force_remount=True) 后重试。")
+            continue
     if tv_dir is None:
-        print(f"[skip] TextVQA: 未在 {candidates} 找到")
+        print(f"[skip] TextVQA: 未在 {[str(c) for c in candidates]} 找到")
         return None
 
     print(f"\n[task] TextVQA  (n_target={n_samples})")
