@@ -1298,17 +1298,42 @@ def eval_stage1_regression(model, image_processor, prompt_builder,
         print(f"[skip] Stage 1 holdout: {holdout_path} 不存在")
         return None
 
-    # 选择 image loader：目录 / zip 两种模式
+    # 选择 image loader：支持三种模式
+    #   1) 直接给 zip 文件路径
+    #   2) 给目录路径 + 目录里有 *.zip → 自动用第一个含 'image' 的 zip
+    #   3) 给目录路径 + 目录里图已解压 → 直接读
     image_root = Path(image_root_or_zip)
+    loader = None
+
     if image_root.is_file() and image_root.suffix == ".zip":
-        import zipfile
+        # 模式 1: 直接给 zip
+        import zipfile  # noqa: PLC0415
         zf = zipfile.ZipFile(image_root)
-        def loader(rel):
+        print(f"  [stage1 regression] 用 zip: {image_root}")
+        def loader(rel):  # noqa: E306
             with zf.open(rel) as f:
                 return Image.open(io.BytesIO(f.read())).convert("RGB")
+    elif image_root.is_dir():
+        # 检查目录里是否有 zip 文件
+        candidate_zips = sorted(image_root.glob("*.zip"))
+        if candidate_zips:
+            # 优先选名字含 'image' 的 zip
+            preferred = [z for z in candidate_zips if "image" in z.name.lower()]
+            zip_path = preferred[0] if preferred else candidate_zips[0]
+            print(f"  [stage1 regression] 自动检测到 zip: {zip_path}")
+            import zipfile  # noqa: PLC0415
+            zf = zipfile.ZipFile(zip_path)
+            def loader(rel):  # noqa: E306
+                with zf.open(rel) as f:
+                    return Image.open(io.BytesIO(f.read())).convert("RGB")
+        else:
+            # 模式 3: 已解压目录
+            print(f"  [stage1 regression] 当作已解压目录: {image_root}")
+            def loader(rel):  # noqa: E306
+                return Image.open(image_root / rel).convert("RGB")
     else:
-        def loader(rel):
-            return Image.open(image_root / rel).convert("RGB")
+        print(f"[skip] Stage 1 regression: {image_root} 既不是文件也不是目录")
+        return None
 
     print(f"\n[task] Stage 1 holdout 回归")
     with open(holdout_path) as f:
