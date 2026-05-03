@@ -423,7 +423,7 @@ def render_image_token_placeholder(text: str) -> str:
     s = html_escape(text)
     s = s.replace(
         "&lt;image&gt;",
-        f'<span class="img-token">&lt;image&gt; ×{NUM_IMAGE_TOKENS}</span>',
+        f'<span class="img-token" translate="no">&lt;image&gt; ×{NUM_IMAGE_TOKENS}</span>',
     )
     return s
 
@@ -485,13 +485,13 @@ def card_refcoco(sample, idx) -> str:
         <div class="turn turn-user">
           <div class="role">👤 USER (mask)</div>
           <div class="content">
-            <span class="img-token">&lt;image&gt; ×{NUM_IMAGE_TOKENS}</span>
+            <span class="img-token" translate="no">&lt;image&gt; ×{NUM_IMAGE_TOKENS}</span>
             <br>Provide the bounding box coordinates of {html_escape(ref)}.
           </div>
         </div>
         <div class="turn turn-asst">
           <div class="role">🤖 ASSISTANT (loss)</div>
-          <div class="content"><span class="bbox-token">{bbox_str}</span></div>
+          <div class="content"><span class="bbox-token" translate="no">{bbox_str}</span></div>
         </div>
         <details class="raw">
           <summary>HF 原始字段</summary>
@@ -534,7 +534,7 @@ def card_textvqa(sample, idx) -> str:
         <div class="turn turn-user">
           <div class="role">👤 USER (假设投训会被 mask)</div>
           <div class="content">
-            <span class="img-token">&lt;image&gt; ×{NUM_IMAGE_TOKENS}</span>
+            <span class="img-token" translate="no">&lt;image&gt; ×{NUM_IMAGE_TOKENS}</span>
             <br>{html_escape(sample['question'])}
           </div>
         </div>
@@ -549,7 +549,7 @@ def card_textvqa(sample, idx) -> str:
 def render_template_demo() -> str:
     """展示 ChatFormatter 把单 turn 包装成 chat 格式的过程。"""
     return """
-<div class="template-demo">
+<div class="template-demo" translate="no">
 <span class="marker">&lt;|im_start|&gt;</span><span class="role">user</span>
 <span class="image-block">&lt;image&gt; &lt;image&gt; &lt;image&gt; ... (×729 个 image_token_id)</span>
 What is the man wearing?
@@ -576,6 +576,11 @@ def render_html(llava_samples, refcoco_samples, sharegpt_samples,
 <head>
 <meta charset="UTF-8">
 <title>Stage 2 训练数据抽样可视化</title>
+<!-- 禁用 Chrome / Edge 自动翻译。
+     页面已是中文为主，技术 token (<image>, <box>) 和英文标签 (USER/ASSISTANT/MASK/LOSS)
+     被翻译会出现"MASK→口罩"这类错译 + 双重渲染问题。 -->
+<meta name="google" content="notranslate">
+<meta http-equiv="Content-Language" content="zh-CN">
 <style>{CSS}</style>
 </head>
 <body>
