@@ -1,0 +1,1468 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8" />
+<title>Stage-1 baseline @ checkpoint-8000 (caption-only)</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif; max-width: 1280px; margin: 24px auto; padding: 0 24px; color: #1f2937; line-height: 1.5; }
+h1 { font-size: 28px; margin-bottom: 4px; }
+h2 { font-size: 22px; margin-top: 48px; padding-bottom: 8px; border-bottom: 2px solid #e5e7eb; }
+.subtitle { color: #6b7280; margin-top: 0; }
+.meta { margin: 12px 0; }
+.chip { display: inline-block; padding: 4px 10px; margin-right: 8px; margin-bottom: 4px; border: 1px solid; border-radius: 999px; font-size: 13px; }
+.note { background: #f9fafb; border-left: 4px solid #3b82f6; padding: 10px 14px; margin: 12px 0 18px; font-size: 14px; color: #374151; }
+.sample-table { border-collapse: collapse; width: 100%; margin: 8px 0 16px; font-size: 13px; }
+.sample-table th, .sample-table td { padding: 8px 10px; vertical-align: top; border-bottom: 1px solid #e5e7eb; }
+.sample-table th { background: #f3f4f6; text-align: left; font-weight: 600; }
+.sample-table img { width: 220px; max-height: 200px; object-fit: contain; border-radius: 6px; background: #f3f4f6; }
+.img-missing { width: 220px; height: 130px; display: flex; align-items: center; justify-content: center; background: #f3f4f6; color: #9ca3af; border-radius: 6px; font-size: 12px; text-align: center; padding: 8px; }
+.idx { width: 30px; font-weight: 600; color: #6b7280; }
+.qa .q { margin-bottom: 4px; }
+.qa .gt { color: #047857; margin-bottom: 4px; }
+.qa .gen { color: #1d4ed8; }
+.qa code, code { background: #e5e7eb; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+.score { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 70px; }
+.summary-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin: 16px 0 24px; }
+.card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 16px; background: #fff; }
+.card h3 { margin: 0 0 6px; font-size: 16px; }
+.toc { display: flex; gap: 16px; flex-wrap: wrap; margin: 12px 0 28px; }
+.toc a { padding: 6px 12px; background: #eff6ff; color: #1e40af; text-decoration: none; border-radius: 6px; font-size: 14px; }
+.toc a:hover { background: #dbeafe; }
+</style></head>
+<body>
+<h1>Stage-1 baseline · checkpoint-8000 · caption-only</h1>
+<p class="subtitle">QwenVL3 · Qwen2.5-1.5B + SigLIP2-SO400M · LLaVA-style 三阶段训练 · Stage-2 多任务预训练之前的快照,作为后续 A/B 对比的基线。</p>
+<div class="toc">
+  <a href="#overview">总览</a>
+  <a href="#llava">① LLaVA-Instruct</a>
+  <a href="#textvqa">② TextVQA</a>
+  <a href="#refcoco">③ RefCOCO</a>
+  <a href="#sharegpt4v">④ ShareGPT4V</a>
+  <a href="#takeaway">结论</a>
+</div>
+<section id="overview">
+<h2>总览</h2>
+<p>Stage-1 (LLaVA-CC3M-Pretrain projector-only 训练) 的 8000 步 checkpoint,在 4 个 Stage-2/3 任务上跑 <b>caption-only</b> baseline:模型输入 <code>&lt;image&gt;</code> + 空 prompt(因为它只学过 image→caption)。</p>
+<div class="summary-grid">
+  <div class="card"><h3>① LLaVA-Instruct</h3><b>avg keyword match: 10.0%</b><br/>≈10% — caption 大致命中场景关键词;具体回答能力等 Stage-2。</div>
+  <div class="card"><h3>② TextVQA</h3><b>substring match: 7.5%</b><br/>3/40 偶尔抓到了图里的字。Stage-2 TextVQA 数据会涨。</div>
+  <div class="card"><h3>③ RefCOCO</h3><b>bbox parse: 0%, IoU: 0.00</b><br/>预期为零 — 模型没见过 bbox 输出格式;脚本本身的 ref 字段也有 bug 待修。</div>
+  <div class="card"><h3>④ ShareGPT4V</h3><b>avg 9.7 words / repetition 0%</b><br/>输出干净不退化,但只产 COCO 短句风格。Stage-2 长 caption 数据是主驱动力。</div>
+</div>
+<p class="note">为什么 with-question 模式是全 0? 因为 Stage-1 训练数据全是 <code>&lt;image&gt;</code> + caption,模型从未见过英文问题。Stage-2 的多轮 instruction-tuning 才让它能"答题"。本报告的 caption-only 模式测出了 Stage-1 <i>真实拥有</i> 的能力。</p>
+</section>
+
+    <section id="llava">
+      <h2>① LLaVA-Instruct-150K (multi-turn VQA + reasoning)</h2>
+      <div class="meta"><span class="chip" style="border-color:#16a34a;color:#16a34a;">avg_keyword_match_rate: <b>10.0%</b></span><span class="chip" style="border-color:#3b82f6;color:#3b82f6;">n: <b>40</b></span></div>
+      <p class="note">Caption-only mode: model sees image + <code>&lt;image&gt;</code>, no question. The "GT answer" is for the (unseen) question, so a low keyword match is expected. Strong rows (≥20%) are highlighted green.</p>
+      <table class="sample-table">
+        <thead><tr><th>#</th><th style="width:280px;">Image</th><th>Q / GT / Generated</th><th>kw match</th></tr></thead>
+        <tbody><tr style="background:#dcfce7;">
+          <td class="idx">14</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000416697.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What is the young boy doing in the image?</div>
+            <div class="gt"><b>GT:</b> The young boy is sitting at a table and eating a bowl of cereal.</div>
+            <div class="gen"><b>GEN:</b> a young boy eating cereal at a restaurant</div>
+          </td>
+          <td class="score">42.9%</td>
+        </tr><tr style="background:#dcfce7;">
+          <td class="idx">28</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000081447.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What is the person carrying while walking past the stop sign?</div>
+            <div class="gt"><b>GT:</b> A red backpack while walking past the stop sign.</div>
+            <div class="gen"><b>GEN:</b> a man walking on a road with a stop sign in the background</div>
+          </td>
+          <td class="score">37.5%</td>
+        </tr><tr style="background:#dcfce7;">
+          <td class="idx">27</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000468263.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What are the two police officers riding in the image?</div>
+            <div class="gt"><b>GT:</b> One officer rides a black horse, the other on a motorcycle.</div>
+            <div class="gen"><b>GEN:</b> a police officer and a horse on a street</div>
+          </td>
+          <td class="score">33.3%</td>
+        </tr><tr style="background:#dcfce7;">
+          <td class="idx">18</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000281646.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What is the person in the image doing?</div>
+            <div class="gt"><b>GT:</b> A young woman playing tennis, getting ready to hit a tennis ball.</div>
+            <div class="gen"><b>GEN:</b> a woman tennis player hitting a tennis ball</div>
+          </td>
+          <td class="score">27.3%</td>
+        </tr><tr style="background:#dcfce7;">
+          <td class="idx">20</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000284342.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What color is the train in the image?</div>
+            <div class="gt"><b>GT:</b> Blue and silver.</div>
+            <div class="gen"><b>GEN:</b> a train is parked at a station in the mountains</div>
+          </td>
+          <td class="score">25.0%</td>
+        </tr><tr style="background:#dcfce7;">
+          <td class="idx">32</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000128850.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What is the weather like in the image?</div>
+            <div class="gt"><b>GT:</b> Rainy, as evidenced by the wet street and people holding umbrellas.</div>
+            <div class="gen"><b>GEN:</b> people walking down the street in shanghai</div>
+          </td>
+          <td class="score">25.0%</td>
+        </tr><tr style="background:#dcfce7;">
+          <td class="idx">6</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000277775.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> How many people are in the living room, and what are they doing?</div>
+            <div class="gt"><b>GT:</b> Three people in the living room, gathered as friends socializing.</div>
+            <div class="gen"><b>GEN:</b> a group of people sitting in a living room</div>
+          </td>
+          <td class="score">23.8%</td>
+        </tr><tr style="background:#dcfce7;">
+          <td class="idx">13</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000219127.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> How many sheep are visible in the image?</div>
+            <div class="gt"><b>GT:</b> There are four sheep visible in the image.</div>
+            <div class="gen"><b>GEN:</b> sheep in a barn with a straw roof</div>
+          </td>
+          <td class="score">20.0%</td>
+        </tr><tr style="background:#dcfce7;">
+          <td class="idx">33</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000536964.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> How many people are seen in the boat?</div>
+            <div class="gt"><b>GT:</b> Three people in the boat — two men and a woman.</div>
+            <div class="gen"><b>GEN:</b> a man and two boys on a boat in a river</div>
+          </td>
+          <td class="score">20.0%</td>
+        </tr><tr style="background:#fef9c3;">
+          <td class="idx">7</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000121720.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> How is the man in the image dressed?</div>
+            <div class="gt"><b>GT:</b> The man is dressed in a suit and tie, and appears to be wearing a coat as well.</div>
+            <div class="gen"><b>GEN:</b> a man in a suit walks down a street in the city</div>
+          </td>
+          <td class="score">14.3%</td>
+        </tr><tr style="background:#fef9c3;">
+          <td class="idx">9</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000227935.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What are the colors of the tiles in the bathroom?</div>
+            <div class="gt"><b>GT:</b> Gray on the bottom half, white on the top half.</div>
+            <div class="gen"><b>GEN:</b> a bathroom with a sink, toilet, and bathtub</div>
+          </td>
+          <td class="score">14.3%</td>
+        </tr><tr style="background:#fef9c3;">
+          <td class="idx">35</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000330342.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What is the occasion in the image?</div>
+            <div class="gt"><b>GT:</b> A wedding — bride and groom cutting the wedding cake together.</div>
+            <div class="gen"><b>GEN:</b> a couple getting married at a wedding ceremony</div>
+          </td>
+          <td class="score">12.5%</td>
+        </tr><tr style="background:#fef9c3;">
+          <td class="idx">15</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000533742.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What activity is the person engaged in within the image?</div>
+            <div class="gt"><b>GT:</b> Surfing on a surfboard on top of a wave in the ocean.</div>
+            <div class="gen"><b>GEN:</b> a surfer in a wetsuit is riding a wave</div>
+          </td>
+          <td class="score">11.1%</td>
+        </tr><tr style="background:#fef9c3;">
+          <td class="idx">30</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000324334.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> How can one describe the atmosphere or theme of this bathroom?</div>
+            <div class="gt"><b>GT:</b> Cozy, inviting; sink, shower, brown star, baby blue towels/curtains.</div>
+            <div class="gen"><b>GEN:</b> a bathroom with a shower curtain and a starfish on the wall</div>
+          </td>
+          <td class="score">10.3%</td>
+        </tr><tr style="background:;">
+          <td class="idx">40</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000579937.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> Why might the woman be walking down the street in the rain?</div>
+            <div class="gt"><b>GT:</b> Commuting, errands, or stroll; using umbrella for protection.</div>
+            <div class="gen"><b>GEN:</b> a woman walks down the street in the rain</div>
+          </td>
+          <td class="score">9.8%</td>
+        </tr><tr style="background:;">
+          <td class="idx">36</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000367982.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What is the main action performed by the baseball player in the image?</div>
+            <div class="gt"><b>GT:</b> Swinging a bat and hitting a ball during a game.</div>
+            <div class="gen"><b>GEN:</b> a pitcher throwing a ball to the catcher</div>
+          </td>
+          <td class="score">9.1%</td>
+        </tr><tr style="background:;">
+          <td class="idx">10</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000267978.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> Possible reason for arranging these items together?</div>
+            <div class="gt"><b>GT:</b> Display, photo shoot, or decoration; teddy bear, toy duck, Eiffel Tower charm.</div>
+            <div class="gen"><b>GEN:</b> a teddy bear and a toy eiffel tower on a white table</div>
+          </td>
+          <td class="score">8.3%</td>
+        </tr><tr style="background:;">
+          <td class="idx">5</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000454227.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What is this photo about?</div>
+            <div class="gt"><b>GT:</b> Two people walking across the sand carrying surfboards, several others on the beach.</div>
+            <div class="gen"><b>GEN:</b> a surfer carrying two surfboards on the beach</div>
+          </td>
+          <td class="score">5.7%</td>
+        </tr><tr style="background:;">
+          <td class="idx">16</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000351968.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What is this photo about?</div>
+            <div class="gt"><b>GT:</b> Showroom for snow skis; man on ski bike; pair of skis; handbag and backpack; TV on wall.</div>
+            <div class="gen"><b>GEN:</b> a man and a woman are standing in front of a bike stand</div>
+          </td>
+          <td class="score">4.7%</td>
+        </tr><tr style="background:;">
+          <td class="idx">26</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000424718.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> Analyze the image in a comprehensive and detailed manner.</div>
+            <div class="gt"><b>GT:</b> Blue cloudy sky filled with at least 15 kites of various shapes/sizes/colors; two birds.</div>
+            <div class="gen"><b>GEN:</b> a group of colorful kites flying in the sky</div>
+          </td>
+          <td class="score">4.3%</td>
+        </tr><tr style="background:;">
+          <td class="idx">8</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000261077.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What could be the purpose of this room and the prevalent color?</div>
+            <div class="gt"><b>GT:</b> Living/sitting room; couch, chaise lounge, chairs, plants; prevalent yellow walls.</div>
+            <div class="gen"><b>GEN:</b> a room with a chandelier and a couch</div>
+          </td>
+          <td class="score">4.1%</td>
+        </tr><tr style="background:;">
+          <td class="idx">19</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000121644.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What potential risk does the woman face in this activity?</div>
+            <div class="gt"><b>GT:</b> Riding a bicycle while looking at her cell phone — distracted cycling.</div>
+            <div class="gen"><b>GEN:</b> a woman on a bicycle in front of a house</div>
+          </td>
+          <td class="score">4.0%</td>
+        </tr><tr style="background:;">
+          <td class="idx">23</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000311899.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> Explain the visual content of the image in great detail.</div>
+            <div class="gt"><b>GT:</b> Fruit stand with bananas, oranges, apples; motorcycle parked nearby.</div>
+            <div class="gen"><b>GEN:</b> a fruit market in hanoi, vietnam</div>
+          </td>
+          <td class="score">4.0%</td>
+        </tr><tr style="background:;">
+          <td class="idx">31</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000317573.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What do you see happening in this image?</div>
+            <div class="gt"><b>GT:</b> Dining table for breakfast: cereal, roll, fruit, butter, two cups (coffee/muffin).</div>
+            <div class="gen"><b>GEN:</b> a couple eating breakfast at a hotel</div>
+          </td>
+          <td class="score">3.9%</td>
+        </tr><tr style="background:;">
+          <td class="idx">3</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000458282.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> Explain the visual content of the image in great detail.</div>
+            <div class="gt"><b>GT:</b> Hotel room with bathroom and bedroom; sink/mirror/bottles; bed and chair visible.</div>
+            <div class="gen"><b>GEN:</b> a bathroom with a sink, toilet, and a bed</div>
+          </td>
+          <td class="score">3.8%</td>
+        </tr><tr style="background:;">
+          <td class="idx">29</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000355652.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> Why is the woman able to feed the giraffe without too much difficulty?</div>
+            <div class="gt"><b>GT:</b> Standing on an elevated platform at giraffe&#x27;s height level.</div>
+            <div class="gen"><b>GEN:</b> a woman feeding a giraffe at the giraffe sanctuary</div>
+          </td>
+          <td class="score">3.6%</td>
+        </tr><tr style="background:;">
+          <td class="idx">24</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000004490.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What challenges may the person face in these snowy conditions?</div>
+            <div class="gt"><b>GT:</b> Balance, terrain adaptability, visibility, weather safety.</div>
+            <div class="gen"><b>GEN:</b> a young man wearing green pants and a green jacket is skiing in the snow</div>
+          </td>
+          <td class="score">2.9%</td>
+        </tr><tr style="background:;">
+          <td class="idx">17</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000173124.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> Benefits of horse-drawn carriage vs motor vehicles?</div>
+            <div class="gt"><b>GT:</b> Lower environmental impact, nostalgic experience, tourist attraction, slower traffic.</div>
+            <div class="gen"><b>GEN:</b> a group of horses pulling a hay cart on the road</div>
+          </td>
+          <td class="score">2.6%</td>
+        </tr><tr style="background:;">
+          <td class="idx">22</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000033642.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> Benefits of double-decker buses in a city?</div>
+            <div class="gt"><b>GT:</b> Larger capacity, reduced emissions per passenger, tourist appeal.</div>
+            <div class="gen"><b>GEN:</b> a red double decker bus driving down the street</div>
+          </td>
+          <td class="score">2.2%</td>
+        </tr><tr style="background:;">
+          <td class="idx">4</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000084277.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What are the key elements in this picture?</div>
+            <div class="gt"><b>GT:</b> Busy downtown area with traffic, motorcycle/moped, pedestrians, apples on display.</div>
+            <div class="gen"><b>GEN:</b> the apple store in london</div>
+          </td>
+          <td class="score">1.8%</td>
+        </tr><tr style="background:;">
+          <td class="idx">21</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000511127.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> How can beginners make the most out of their experience on this ski slope?</div>
+            <div class="gt"><b>GT:</b> Lessons, gear, equipment, gentle slopes, safety rules, hydration, patience.</div>
+            <div class="gen"><b>GEN:</b> people skiing down a ski slope</div>
+          </td>
+          <td class="score">1.8%</td>
+        </tr><tr style="background:;">
+          <td class="idx">11</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000172351.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What potential risks are involved in this activity?</div>
+            <div class="gt"><b>GT:</b> Skateboarding tricks: falls, injuries, sprains, fractures.</div>
+            <div class="gen"><b>GEN:</b> a skateboarder is jumping off a rail</div>
+          </td>
+          <td class="score">1.7%</td>
+        </tr><tr style="background:;">
+          <td class="idx">39</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000036228.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What precautions should the woman take when handling the hot pan?</div>
+            <div class="gt"><b>GT:</b> Use oven mitts, open oven carefully, place on heat-safe surface.</div>
+            <div class="gen"><b>GEN:</b> a woman in a kitchen is using a pot to cook</div>
+          </td>
+          <td class="score">1.6%</td>
+        </tr><tr style="background:;">
+          <td class="idx">34</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000046114.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What might be the purpose of stacking several small laptops in this manner?</div>
+            <div class="gt"><b>GT:</b> Sales demo, trade show, computer store, education — easy comparison.</div>
+            <div class="gen"><b>GEN:</b> a stack of laptops on a table</div>
+          </td>
+          <td class="score">1.4%</td>
+        </tr><tr style="background:;">
+          <td class="idx">1</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000573704.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> How many baseball players are visible in the image?</div>
+            <div class="gt"><b>GT:</b> There are three baseball players visible in the image.</div>
+            <div class="gen"><b>GEN:</b> the detroit tigers in the 1950s</div>
+          </td>
+          <td class="score">0.0%</td>
+        </tr><tr style="background:;">
+          <td class="idx">2</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000424912.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What is the man wearing in the image?</div>
+            <div class="gt"><b>GT:</b> The man in the image is wearing chaps, a cowboy hat, and is dressed like a cowboy.</div>
+            <div class="gen"><b>GEN:</b> a man on a horse in the middle of a field</div>
+          </td>
+          <td class="score">0.0%</td>
+        </tr><tr style="background:;">
+          <td class="idx">12</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000180696.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What is the man wearing on his head?</div>
+            <div class="gt"><b>GT:</b> The man is wearing a hat on his head.</div>
+            <div class="gen"><b>GEN:</b> a man in a white shirt and glasses with a brown hat</div>
+          </td>
+          <td class="score">0.0%</td>
+        </tr><tr style="background:;">
+          <td class="idx">25</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000043425.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What factors could have contributed to the dog&#x27;s sad expression?</div>
+            <div class="gt"><b>GT:</b> Loneliness, surroundings, weather, breed&#x27;s natural facial expression.</div>
+            <div class="gen"><b>GEN:</b> a small dog with a white face and brown eyes</div>
+          </td>
+          <td class="score">0.0%</td>
+        </tr><tr style="background:;">
+          <td class="idx">37</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000495167.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> What precautions should pedestrians take if they want to interact with the bird?</div>
+            <div class="gt"><b>GT:</b> Be cautious, respect personal space, move slowly, observe.</div>
+            <div class="gen"><b>GEN:</b> a great blue heron standing on a railing</div>
+          </td>
+          <td class="score">0.0%</td>
+        </tr><tr style="background:;">
+          <td class="idx">38</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000492729.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> How many plates and bowls are there on the tray?</div>
+            <div class="gt"><b>GT:</b> Two plates and one paper bowl on the tray.</div>
+            <div class="gen"><b>GEN:</b> a plate of food with a plate of rice and a plate of beans</div>
+          </td>
+          <td class="score">0.0%</td>
+        </tr></tbody>
+      </table>
+    </section>
+
+    <section id="textvqa">
+      <h2>② TextVQA (image-text OCR + answer)</h2>
+      <div class="meta"><span class="chip" style="border-color:#dc2626;color:#dc2626;">substring_match_rate: <b>7.5%</b></span><span class="chip" style="border-color:#3b82f6;color:#3b82f6;">n: <b>40</b></span></div>
+      <p class="note">3/40 hits. The model occasionally surfaces text it sees in the image (idx 11 "p" on hat, idx 21 "writing new york" book cover, idx 29 "with caution" sign).</p>
+      <table class="sample-table">
+        <thead><tr><th>#</th><th style="width:240px;">Image</th><th>Q / GT / Generated</th><th>match</th></tr></thead>
+        <tbody><tr style="background:;">
+          <td class="idx">1</td>
+          <td><img src="baseline_at_8000/images/textvqa/001.jpg" alt="TextVQA 1" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what is the brand of the second bottle from the left?</div>
+            <div class="gt"><b>GT:</b> southern comfort</div>
+            <div class="gen"><b>GEN:</b> a variety of bottles of whiskey on a bar counter</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">2</td>
+          <td><img src="baseline_at_8000/images/textvqa/002.jpg" alt="TextVQA 2" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what time does the top clock show?</div>
+            <div class="gt"><b>GT:</b> 10:07</div>
+            <div class="gen"><b>GEN:</b> a collection of antique clocks and watches on a table</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">3</td>
+          <td><img src="baseline_at_8000/images/textvqa/003.jpg" alt="TextVQA 3" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what word is written in white at the bottom of the label?</div>
+            <div class="gt"><b>GT:</b> barbieri</div>
+            <div class="gen"><b>GEN:</b> three bottles of apertol on a table</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">4</td>
+          <td><img src="baseline_at_8000/images/textvqa/004.jpg" alt="TextVQA 4" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> how much is the pink headband?</div>
+            <div class="gt"><b>GT:</b> 2.00</div>
+            <div class="gen"><b>GEN:</b> a table with a variety of items for sale</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">5</td>
+          <td><img src="baseline_at_8000/images/textvqa/005.jpg" alt="TextVQA 5" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what can you not do at anytime?</div>
+            <div class="gt"><b>GT:</b> standing</div>
+            <div class="gen"><b>GEN:</b> a black and white photograph of a street in the city</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">6</td>
+          <td><img src="baseline_at_8000/images/textvqa/006.jpg" alt="TextVQA 6" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> which bank is hosting the cup?</div>
+            <div class="gt"><b>GT:</b> charles schwab</div>
+            <div class="gen"><b>GEN:</b> a large screen with a sign that says the princly classic tournament</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">7</td>
+          <td><img src="baseline_at_8000/images/textvqa/007.jpg" alt="TextVQA 7" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what year is printed on the right?</div>
+            <div class="gt"><b>GT:</b> 1605</div>
+            <div class="gen"><b>GEN:</b> a book with a picture of a horse and rider</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">8</td>
+          <td><img src="baseline_at_8000/images/textvqa/008.jpg" alt="TextVQA 8" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> 3 digit number on the right side of that card?</div>
+            <div class="gt"><b>GT:</b> 901</div>
+            <div class="gen"><b>GEN:</b> a woman holding a fridge in front of a red wall</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">9</td>
+          <td><img src="baseline_at_8000/images/textvqa/009.jpg" alt="TextVQA 9" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what is written on the car?</div>
+            <div class="gt"><b>GT:</b> castrol edge</div>
+            <div class="gen"><b>GEN:</b> a man and woman stand in front of a castrol car</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">10</td>
+          <td><img src="baseline_at_8000/images/textvqa/010.jpg" alt="TextVQA 10" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> is that a comic-con banner?</div>
+            <div class="gt"><b>GT:</b> yes</div>
+            <div class="gen"><b>GEN:</b> a street sign with a banner that says&#x27;celebrating the popular arts &#x27;</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:#dcfce7;">
+          <td class="idx">11</td>
+          <td><img src="baseline_at_8000/images/textvqa/011.jpg" alt="TextVQA 11" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what letter is on the hat?</div>
+            <div class="gt"><b>GT:</b> p</div>
+            <div class="gen"><b>GEN:</b> a white cap with a p on it</div>
+          </td>
+          <td class="score">&#9989;</td>
+        </tr><tr style="background:;">
+          <td class="idx">12</td>
+          <td><img src="baseline_at_8000/images/textvqa/012.jpg" alt="TextVQA 12" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what is the name of the drink in red?</div>
+            <div class="gt"><b>GT:</b> coca cola</div>
+            <div class="gen"><b>GEN:</b> a young woman is holding a cup of soda</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">13</td>
+          <td><img src="baseline_at_8000/images/textvqa/013.jpg" alt="TextVQA 13" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what runner number does this runner have?</div>
+            <div class="gt"><b>GT:</b> 1</div>
+            <div class="gen"><b>GEN:</b> a runner in orange and blue running in the race</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">14</td>
+          <td><img src="baseline_at_8000/images/textvqa/014.jpg" alt="TextVQA 14" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what country is the ketchup from ?</div>
+            <div class="gt"><b>GT:</b> australia</div>
+            <div class="gen"><b>GEN:</b> a bottle of tomato ketchup is displayed on a shelf</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">15</td>
+          <td><img src="baseline_at_8000/images/textvqa/015.jpg" alt="TextVQA 15" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what color are the man in black short&#x27;s gloves?</div>
+            <div class="gt"><b>GT:</b> answering does not require reading text in the image</div>
+            <div class="gen"><b>GEN:</b> a boxer in a ring with a flag on the side</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">16</td>
+          <td><img src="baseline_at_8000/images/textvqa/016.jpg" alt="TextVQA 16" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what is the number of the player in the black jersey towards the bottom of the picture?</div>
+            <div class="gt"><b>GT:</b> 6</div>
+            <div class="gen"><b>GEN:</b> the arsenal players are celebrating after scoring a goal</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">17</td>
+          <td><img src="baseline_at_8000/images/textvqa/017.jpg" alt="TextVQA 17" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what is on the sign with two down arrows?</div>
+            <div class="gt"><b>GT:</b> herning</div>
+            <div class="gen"><b>GEN:</b> a highway sign with a number and arrow pointing to the next exit</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">18</td>
+          <td><img src="baseline_at_8000/images/textvqa/018.jpg" alt="TextVQA 18" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what does the bookmark say?</div>
+            <div class="gt"><b>GT:</b> shh!</div>
+            <div class="gen"><b>GEN:</b> a book with a bookmark that says trying to read</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">19</td>
+          <td><img src="baseline_at_8000/images/textvqa/019.jpg" alt="TextVQA 19" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what time does the clock say?</div>
+            <div class="gt"><b>GT:</b> 4:34</div>
+            <div class="gen"><b>GEN:</b> a clock with a white clock face and a red clock face</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">20</td>
+          <td><img src="baseline_at_8000/images/textvqa/020.jpg" alt="TextVQA 20" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what drink is in the boxes?</div>
+            <div class="gt"><b>GT:</b> diet coke</div>
+            <div class="gen"><b>GEN:</b> a box of coke cans is stacked up in a warehouse</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:#dcfce7;">
+          <td class="idx">21</td>
+          <td><img src="baseline_at_8000/images/textvqa/021.jpg" alt="TextVQA 21" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what is the title of this book?</div>
+            <div class="gt"><b>GT:</b> writing new york</div>
+            <div class="gen"><b>GEN:</b> the cover of the book writing new york</div>
+          </td>
+          <td class="score">&#9989;</td>
+        </tr><tr style="background:;">
+          <td class="idx">22</td>
+          <td><img src="baseline_at_8000/images/textvqa/022.jpg" alt="TextVQA 22" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what state was the tag issued in?</div>
+            <div class="gt"><b>GT:</b> california</div>
+            <div class="gen"><b>GEN:</b> a car with a license plate that says 4 jegg610</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">23</td>
+          <td><img src="baseline_at_8000/images/textvqa/023.jpg" alt="TextVQA 23" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what year was the coin made?</div>
+            <div class="gt"><b>GT:</b> 2004</div>
+            <div class="gen"><b>GEN:</b> a collection of philippine coins on a table</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">24</td>
+          <td><img src="baseline_at_8000/images/textvqa/024.jpg" alt="TextVQA 24" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what is the name of the airliner?</div>
+            <div class="gt"><b>GT:</b> sunliners</div>
+            <div class="gen"><b>GEN:</b> a pilot in a green vest is flying a jet over the water</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">25</td>
+          <td><img src="baseline_at_8000/images/textvqa/025.jpg" alt="TextVQA 25" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what&#x27;s the brand name of the wine?</div>
+            <div class="gt"><b>GT:</b> cremant d&#x27;alsace</div>
+            <div class="gen"><b>GEN:</b> a bottle of rose wine on a table</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">26</td>
+          <td><img src="baseline_at_8000/images/textvqa/026.jpg" alt="TextVQA 26" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what are the first three letters of the left boxer&#x27;s name?</div>
+            <div class="gt"><b>GT:</b> moa</div>
+            <div class="gen"><b>GEN:</b> two men boxing in a ring</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">27</td>
+          <td><img src="baseline_at_8000/images/textvqa/027.jpg" alt="TextVQA 27" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what number is this laptop?</div>
+            <div class="gt"><b>GT:</b> 1</div>
+            <div class="gen"><b>GEN:</b> an apple on a desk with a note on it</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">28</td>
+          <td><img src="baseline_at_8000/images/textvqa/028.jpg" alt="TextVQA 28" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what number is the player looking at the children?</div>
+            <div class="gt"><b>GT:</b> 9</div>
+            <div class="gen"><b>GEN:</b> the chicago cubs players and their children are congratulating each other after a game</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:#dcfce7;">
+          <td class="idx">29</td>
+          <td><img src="baseline_at_8000/images/textvqa/029.jpg" alt="TextVQA 29" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> how should one proceed?</div>
+            <div class="gt"><b>GT:</b> with caution</div>
+            <div class="gen"><b>GEN:</b> a sign that says, processed with caution</div>
+          </td>
+          <td class="score">&#9989;</td>
+        </tr><tr style="background:;">
+          <td class="idx">30</td>
+          <td><img src="baseline_at_8000/images/textvqa/030.jpg" alt="TextVQA 30" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what number is written on the front of the plane?</div>
+            <div class="gt"><b>GT:</b> 30</div>
+            <div class="gen"><b>GEN:</b> an american air force jet flying over a blue sky</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">31</td>
+          <td><img src="baseline_at_8000/images/textvqa/031.jpg" alt="TextVQA 31" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what brand is on the bottle?</div>
+            <div class="gt"><b>GT:</b> hubnran</div>
+            <div class="gen"><b>GEN:</b> a glass of beer and a glass of beer on a table</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">32</td>
+          <td><img src="baseline_at_8000/images/textvqa/032.jpg" alt="TextVQA 32" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what number is on the piece of paper?</div>
+            <div class="gt"><b>GT:</b> 10</div>
+            <div class="gen"><b>GEN:</b> a computer keyboard on a table with a computer screen in the background</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">33</td>
+          <td><img src="baseline_at_8000/images/textvqa/033.jpg" alt="TextVQA 33" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what number is on the man in blue who has his arm raised?</div>
+            <div class="gt"><b>GT:</b> 3</div>
+            <div class="gen"><b>GEN:</b> the men&#x27;s basketball team is playing against the men&#x27;s basketball team</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">34</td>
+          <td><img src="baseline_at_8000/images/textvqa/034.jpg" alt="TextVQA 34" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> are gators a sports team from florida?</div>
+            <div class="gt"><b>GT:</b> unanswerable</div>
+            <div class="gen"><b>GEN:</b> a young man in a white t-shirt and blue shorts is walking down the street</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">35</td>
+          <td><img src="baseline_at_8000/images/textvqa/035.jpg" alt="TextVQA 35" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what is the name on the box?</div>
+            <div class="gt"><b>GT:</b> mantoro, gouda, gruyere </div>
+            <div class="gen"><b>GEN:</b> a box of cheese and wine</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">36</td>
+          <td><img src="baseline_at_8000/images/textvqa/036.jpg" alt="TextVQA 36" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what does the bottle weigh?</div>
+            <div class="gt"><b>GT:</b> 9mg</div>
+            <div class="gen"><b>GEN:</b> the best nail polish for the summer</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">37</td>
+          <td><img src="baseline_at_8000/images/textvqa/037.jpg" alt="TextVQA 37" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what does the right part of the switch say?</div>
+            <div class="gt"><b>GT:</b> off</div>
+            <div class="gen"><b>GEN:</b> the mouse is on a white surface</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">38</td>
+          <td><img src="baseline_at_8000/images/textvqa/038.jpg" alt="TextVQA 38" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what word is written big on the paper clipping?</div>
+            <div class="gt"><b>GT:</b> clear</div>
+            <div class="gen"><b>GEN:</b> an old book with a few pages missing</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">39</td>
+          <td><img src="baseline_at_8000/images/textvqa/039.jpg" alt="TextVQA 39" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what brand of ice cream is on the bottom right?</div>
+            <div class="gt"><b>GT:</b> dreyer&#x27;s</div>
+            <div class="gen"><b>GEN:</b> ice cream and ice cream cones in the freezer</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr><tr style="background:;">
+          <td class="idx">40</td>
+          <td><img src="baseline_at_8000/images/textvqa/040.jpg" alt="TextVQA 40" loading="lazy" /></td>
+          <td class="qa">
+            <div class="q"><b>Q:</b> what is the horse eating?</div>
+            <div class="gt"><b>GT:</b> oats</div>
+            <div class="gen"><b>GEN:</b> a hand holding a bottle of imperial oat</div>
+          </td>
+          <td class="score">&#10060;</td>
+        </tr></tbody>
+      </table>
+    </section>
+
+    <section id="refcoco">
+      <h2>③ RefCOCO (visual grounding / bbox)</h2>
+      <div class="meta"><span class="chip" style="border-color:#dc2626;color:#dc2626;">bbox_parse_rate: <b>0%</b></span><span class="chip" style="border-color:#dc2626;color:#dc2626;">mean_iou: <b>0.00</b></span><span class="chip" style="border-color:#3b82f6;color:#3b82f6;">n: <b>40</b></span></div>
+      <p class="note">0% as expected. Eval script also has known issue: every sample's <code>ref</code> field is the boilerplate prompt rather than the actual referring expression — needs fixing before Stage-2. The model has never seen bbox output format, so it just captions in plain English.</p>
+      <table class="sample-table">
+        <thead><tr><th>#</th><th style="width:240px;">Image</th><th>GT bbox / Generated</th><th>IoU</th></tr></thead>
+        <tbody><tr>
+          <td class="idx">1</td>
+          <td><img src="baseline_at_8000/images/refcoco/001.jpg" alt="RefCOCO 1" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.72, 0.31, 0.86, 0.75]</div>
+            <div class="gen"><b>GEN:</b> the boston red sox are playing against the chicago white sox</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">2</td>
+          <td><img src="baseline_at_8000/images/refcoco/002.jpg" alt="RefCOCO 2" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.16, 0.07, 0.43, 0.88]</div>
+            <div class="gen"><b>GEN:</b> two urinals in a bathroom</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">3</td>
+          <td><img src="baseline_at_8000/images/refcoco/003.jpg" alt="RefCOCO 3" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.16, 0.15, 0.31, 0.97]</div>
+            <div class="gen"><b>GEN:</b> a group of people are standing on a skateboard ramp</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">4</td>
+          <td><img src="baseline_at_8000/images/refcoco/004.jpg" alt="RefCOCO 4" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.27, 0.30, 0.54, 1.00]</div>
+            <div class="gen"><b>GEN:</b> the prime minister of pakistan, shahzad, speaks at a press conference in the capital of pakistan</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">5</td>
+          <td><img src="baseline_at_8000/images/refcoco/005.jpg" alt="RefCOCO 5" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.58, 0.24, 0.88, 1.00]</div>
+            <div class="gen"><b>GEN:</b> two girls in a kitchen holding a cake</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">6</td>
+          <td><img src="baseline_at_8000/images/refcoco/006.jpg" alt="RefCOCO 6" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.00, 0.59, 0.30, 0.80]</div>
+            <div class="gen"><b>GEN:</b> a man is sitting at a table with fruit on the table</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">7</td>
+          <td><img src="baseline_at_8000/images/refcoco/007.jpg" alt="RefCOCO 7" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.00, 0.21, 0.53, 0.91]</div>
+            <div class="gen"><b>GEN:</b> two giraffes stand in the grass at the kalahari reserve</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">8</td>
+          <td><img src="baseline_at_8000/images/refcoco/008.jpg" alt="RefCOCO 8" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.00, 0.57, 1.00, 0.99]</div>
+            <div class="gen"><b>GEN:</b> motorcycles parked on the street in front of a building</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">9</td>
+          <td><img src="baseline_at_8000/images/refcoco/009.jpg" alt="RefCOCO 9" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.08, 0.01, 0.42, 0.33]</div>
+            <div class="gen"><b>GEN:</b> a bowl of quinoa with broccoli and zucchini</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">10</td>
+          <td><img src="baseline_at_8000/images/refcoco/010.jpg" alt="RefCOCO 10" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.01, 0.27, 0.56, 0.93]</div>
+            <div class="gen"><b>GEN:</b> a couple in black and white, sitting on a bench, with tennis rackets in their hands</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">11</td>
+          <td><img src="baseline_at_8000/images/refcoco/011.jpg" alt="RefCOCO 11" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.45, 0.24, 0.63, 0.93]</div>
+            <div class="gen"><b>GEN:</b> a family of three is skiing in the snow</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">12</td>
+          <td><img src="baseline_at_8000/images/refcoco/012.jpg" alt="RefCOCO 12" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.00, 0.27, 0.23, 0.99]</div>
+            <div class="gen"><b>GEN:</b> a woman is sitting at a table with a laptop and a cup of coffee</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">13</td>
+          <td><img src="baseline_at_8000/images/refcoco/013.jpg" alt="RefCOCO 13" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.13, 0.33, 0.41, 0.70]</div>
+            <div class="gen"><b>GEN:</b> two pizzas on a blue table with a knife and a bowl of sauce</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">14</td>
+          <td><img src="baseline_at_8000/images/refcoco/014.jpg" alt="RefCOCO 14" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.00, 0.42, 0.20, 0.72]</div>
+            <div class="gen"><b>GEN:</b> a group of people sitting on a couch playing guitars</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">15</td>
+          <td><img src="baseline_at_8000/images/refcoco/015.jpg" alt="RefCOCO 15" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.53, 0.23, 0.82, 0.51]</div>
+            <div class="gen"><b>GEN:</b> three cows are sitting on the beach</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">16</td>
+          <td><img src="baseline_at_8000/images/refcoco/016.jpg" alt="RefCOCO 16" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.07, 0.05, 0.36, 0.55]</div>
+            <div class="gen"><b>GEN:</b> a plate of beef and broccoli stir fry with rice</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">17</td>
+          <td><img src="baseline_at_8000/images/refcoco/017.jpg" alt="RefCOCO 17" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.02, 0.05, 0.47, 0.72]</div>
+            <div class="gen"><b>GEN:</b> two black and white pottery vases</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">18</td>
+          <td><img src="baseline_at_8000/images/refcoco/018.jpg" alt="RefCOCO 18" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.03, 0.41, 0.40, 0.94]</div>
+            <div class="gen"><b>GEN:</b> three men on skis in the snow</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">19</td>
+          <td><img src="baseline_at_8000/images/refcoco/019.jpg" alt="RefCOCO 19" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.41, 0.26, 0.99, 0.98]</div>
+            <div class="gen"><b>GEN:</b> two girls in raincoats are holding umbrellas</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">20</td>
+          <td><img src="baseline_at_8000/images/refcoco/020.jpg" alt="RefCOCO 20" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.14, 0.02, 0.51, 0.54]</div>
+            <div class="gen"><b>GEN:</b> two dogs are sitting on a pizza plate</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">21</td>
+          <td><img src="baseline_at_8000/images/refcoco/021.jpg" alt="RefCOCO 21" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.00, 0.30, 0.86, 0.85]</div>
+            <div class="gen"><b>GEN:</b> a man with a knife in his hand and a man with a knife in his hand</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">22</td>
+          <td><img src="baseline_at_8000/images/refcoco/022.jpg" alt="RefCOCO 22" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.44, 0.49, 0.98, 1.00]</div>
+            <div class="gen"><b>GEN:</b> two giraffes in the zoo</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">23</td>
+          <td><img src="baseline_at_8000/images/refcoco/023.jpg" alt="RefCOCO 23" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.44, 0.35, 0.90, 0.78]</div>
+            <div class="gen"><b>GEN:</b> two giraffes are sitting on a fence in the zoo</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">24</td>
+          <td><img src="baseline_at_8000/images/refcoco/024.jpg" alt="RefCOCO 24" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.33, 0.25, 0.70, 0.95]</div>
+            <div class="gen"><b>GEN:</b> a man in a baseball cap and a hat is hitting a baseball in a field</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">25</td>
+          <td><img src="baseline_at_8000/images/refcoco/025.jpg" alt="RefCOCO 25" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.35, 0.00, 0.54, 0.43]</div>
+            <div class="gen"><b>GEN:</b> a little boy in a red jacket and blue jeans is sitting on a motorcycle</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">26</td>
+          <td><img src="baseline_at_8000/images/refcoco/026.jpg" alt="RefCOCO 26" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.57, 0.07, 0.93, 0.59]</div>
+            <div class="gen"><b>GEN:</b> a bunch of bananas in a store</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">27</td>
+          <td><img src="baseline_at_8000/images/refcoco/027.jpg" alt="RefCOCO 27" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.19, 0.40, 0.38, 1.00]</div>
+            <div class="gen"><b>GEN:</b> three bottles of wine on a table</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">28</td>
+          <td><img src="baseline_at_8000/images/refcoco/028.jpg" alt="RefCOCO 28" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.56, 0.00, 0.91, 0.27]</div>
+            <div class="gen"><b>GEN:</b> a plate of shrimp, rice, and vegetables</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">29</td>
+          <td><img src="baseline_at_8000/images/refcoco/029.jpg" alt="RefCOCO 29" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.01, 0.35, 0.87, 1.00]</div>
+            <div class="gen"><b>GEN:</b> a woman in a gold top and black skirt is sitting on a bed</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">30</td>
+          <td><img src="baseline_at_8000/images/refcoco/030.jpg" alt="RefCOCO 30" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.28, 0.50, 0.55, 0.79]</div>
+            <div class="gen"><b>GEN:</b> a train station with a large glass roof</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">31</td>
+          <td><img src="baseline_at_8000/images/refcoco/031.jpg" alt="RefCOCO 31" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.21, 0.60, 0.77, 0.99]</div>
+            <div class="gen"><b>GEN:</b> a box of teddy bears</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">32</td>
+          <td><img src="baseline_at_8000/images/refcoco/032.jpg" alt="RefCOCO 32" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.15, 0.22, 0.53, 0.62]</div>
+            <div class="gen"><b>GEN:</b> a group of buses parked in a parking lot</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">33</td>
+          <td><img src="baseline_at_8000/images/refcoco/033.jpg" alt="RefCOCO 33" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.28, 0.30, 0.91, 0.93]</div>
+            <div class="gen"><b>GEN:</b> a carriage with two horses and a man driving it</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">34</td>
+          <td><img src="baseline_at_8000/images/refcoco/034.jpg" alt="RefCOCO 34" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.08, 0.17, 0.56, 0.44]</div>
+            <div class="gen"><b>GEN:</b> a vintage motorcycle in a museum</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">35</td>
+          <td><img src="baseline_at_8000/images/refcoco/035.jpg" alt="RefCOCO 35" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.55, 0.21, 0.83, 0.99]</div>
+            <div class="gen"><b>GEN:</b> people standing in front of a baggage claim counter</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">36</td>
+          <td><img src="baseline_at_8000/images/refcoco/036.jpg" alt="RefCOCO 36" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.86, 0.18, 1.00, 0.97]</div>
+            <div class="gen"><b>GEN:</b> a tennis player in an orange polo shirt and white shorts is hitting the ball</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">37</td>
+          <td><img src="baseline_at_8000/images/refcoco/037.jpg" alt="RefCOCO 37" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.79, 0.01, 1.00, 0.25]</div>
+            <div class="gen"><b>GEN:</b> a clock and a cup on a table</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">38</td>
+          <td><img src="baseline_at_8000/images/refcoco/038.jpg" alt="RefCOCO 38" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.63, 0.04, 0.94, 0.45]</div>
+            <div class="gen"><b>GEN:</b> a orange cat sitting on a table with a bowl of food</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">39</td>
+          <td><img src="baseline_at_8000/images/refcoco/039.jpg" alt="RefCOCO 39" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.11, 0.27, 0.42, 0.59]</div>
+            <div class="gen"><b>GEN:</b> a donut with a cup of coffee and a glass of water</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr><tr>
+          <td class="idx">40</td>
+          <td><img src="baseline_at_8000/images/refcoco/040.jpg" alt="RefCOCO 40" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT bbox:</b> [0.08, 0.16, 0.67, 0.98]</div>
+            <div class="gen"><b>GEN:</b> a man reading a book on a bus</div>
+          </td>
+          <td class="score">IoU=0.00</td>
+        </tr></tbody>
+      </table>
+    </section>
+
+    <section id="sharegpt4v">
+      <h2>④ ShareGPT4V (long detailed captions)</h2>
+      <div class="meta"><span class="chip" style="border-color:#3b82f6;color:#3b82f6;">avg_gen_words: <b>9.7</b></span><span class="chip" style="border-color:#f59e0b;color:#f59e0b;">avg_keyword_match_rate: <b>4.6%</b></span><span class="chip" style="border-color:#16a34a;color:#16a34a;">repetition_rate: <b>0.0%</b></span><span class="chip" style="border-color:#3b82f6;color:#3b82f6;">n: <b>40</b></span></div>
+      <p class="note">Generated captions average <b>9.7 words</b> vs GT ~150 words — Stage-1 only learned short COCO-style captions. <b>0% repetition</b> = clean output. Stage-2 ShareGPT4V data drives length+detail.</p>
+      <table class="sample-table">
+        <thead><tr><th>#</th><th style="width:280px;">Image</th><th>GT preview / Generated</th><th>kw match</th></tr></thead>
+        <tbody><tr style="background:#dcfce7;">
+          <td class="idx">17</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000179699.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 118w):</b> In the center of the image, an older man is seated at a table in a restaurant. He&#x27;s wearing a black sweater and glasses, and he&#x27;s holding a menu in his hands. The menu is blue and features an illustra…</div>
+            <div class="gen"><b>GEN (21w):</b> a man in a black sweater is sitting at a table with a bottle of wine and a plate of food</div>
+          </td>
+          <td class="score">14.3%</td>
+        </tr><tr style="background:#dcfce7;">
+          <td class="idx">4</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000041528.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 95w):</b> In this black and white photo, a young man is the central figure. He&#x27;s wearing a t-shirt adorned with a cartoon character, adding a touch of whimsy to his appearance. In his hands, he&#x27;s holding two di…</div>
+            <div class="gen"><b>GEN (10w):</b> a man in a white shirt holding a game controller</div>
+          </td>
+          <td class="score">12.2%</td>
+        </tr><tr style="background:#dcfce7;">
+          <td class="idx">20</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000220050.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 160w):</b> In the image, a young girl is the main subject, standing on a grass tennis court. She is dressed in a white tennis outfit, which is adorned with a yellow and black logo on the chest. The girl is holdi…</div>
+            <div class="gen"><b>GEN (15w):</b> a young girl in a white tennis outfit with a tennis racket in her hand</div>
+          </td>
+          <td class="score">11.9%</td>
+        </tr><tr style="background:#fef9c3;">
+          <td class="idx">33</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000032990.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 176w):</b> The image captures a quaint, small bathroom bathed in a monochrome palette. Dominating the left side of the frame is a pristine white sink, its surface gleaming under the soft light. Adjacent to it, a…</div>
+            <div class="gen"><b>GEN (12w):</b> a bathroom with a black and white checkerboard floor and a toilet</div>
+          </td>
+          <td class="score">8.2%</td>
+        </tr><tr style="background:#fef9c3;">
+          <td class="idx">1</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000255662.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 93w):</b> In the image, a man is seen riding a brown horse on a beach at sunset. The man is dressed in a white shirt and a black hat, and he holds the reins of the horse. The horse, adorned with a blue saddle, …</div>
+            <div class="gen"><b>GEN (10w):</b> a man on a horse on the beach at sunset</div>
+          </td>
+          <td class="score">8.1%</td>
+        </tr><tr style="background:#fef9c3;">
+          <td class="idx">8</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000302432.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 142w):</b> In the center of the image, a brown teddy bear with orange feet is seated on a white tablecloth adorned with pink and blue flowers. The teddy bear, with its arms and legs spread out in a welcoming ges…</div>
+            <div class="gen"><b>GEN (16w):</b> a teddy bear sitting on a table with a picture of a teddy bear on it</div>
+          </td>
+          <td class="score">7.0%</td>
+        </tr><tr style="background:#fef9c3;">
+          <td class="idx">10</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000200494.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 95w):</b> In the image, a group of six children are joyfully seated in the bed of a white Ford Super Duty pickup truck. The truck is parked on a residential street, with a house visible in the background. The c…</div>
+            <div class="gen"><b>GEN (9w):</b> a group of people sitting on a white truck</div>
+          </td>
+          <td class="score">6.8%</td>
+        </tr><tr style="background:#fef9c3;">
+          <td class="idx">30</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000553278.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 157w):</b> The image captures a tantalizing scene of a freshly baked pizza, resting on a white plate. The pizza, with its golden-brown crust, is the star of the show. It&#x27;s generously topped with vibrant red toma…</div>
+            <div class="gen"><b>GEN (9w):</b> a pizza topped with arugula, mozzarella and parmesan cheese</div>
+          </td>
+          <td class="score">6.6%</td>
+        </tr><tr style="background:#fef9c3;">
+          <td class="idx">14</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000390518.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 126w):</b> In the center of the image, a black and white cat with striking blue eyes is perched on a wooden stool. The stool, crafted from light-colored wood, features a distinctive X-shaped leg design. The cat,…</div>
+            <div class="gen"><b>GEN (14w):</b> a cat sitting on a wooden stool with a wooden table in the background</div>
+          </td>
+          <td class="score">6.6%</td>
+        </tr><tr style="background:#fef9c3;">
+          <td class="idx">7</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000127441.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 169w):</b> In the quiet solitude of the night, a young man stands next to a blue mailbox, his figure illuminated by the soft glow of the streetlights. He is casually dressed in a white t-shirt that proudly displ…</div>
+            <div class="gen"><b>GEN (13w):</b> a man in a t - shirt stands next to a teddy bear</div>
+          </td>
+          <td class="score">6.5%</td>
+        </tr><tr style="background:#fef9c3;">
+          <td class="idx">2</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000109825.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 166w):</b> The image captures a delightful meal served on a white plate, which is placed on a wooden table. The plate is divided into three sections, each filled with a different type of food.
+
+On the left side …</div>
+            <div class="gen"><b>GEN (10w):</b> a plate of fish with vegetables and a potato dish</div>
+          </td>
+          <td class="score">5.5%</td>
+        </tr><tr style="background:#fef9c3;">
+          <td class="idx">16</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000221119.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 80w):</b> In the image, there are two women standing on a wooden platform. The woman on the left is dressed in a black jacket, leopard print pants, and black boots. She is holding a pink suitcase. The woman on …</div>
+            <div class="gen"><b>GEN (7w):</b> two women stand on a train platform</div>
+          </td>
+          <td class="score">5.3%</td>
+        </tr><tr style="background:#fef9c3;">
+          <td class="idx">35</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000235787.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 147w):</b> The image captures a delightful meal served on a white plate, which is placed on a wooden table. The plate is divided into two sections, each filled with a different type of food. 
+
+On the left side o…</div>
+            <div class="gen"><b>GEN (10w):</b> a plate of chicken and vegetables on a white plate</div>
+          </td>
+          <td class="score">5.0%</td>
+        </tr><tr style="background:;">
+          <td class="idx">23</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000071090.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 161w):</b> In the image, a large white teddy bear and a black and white cat are sharing a moment of tranquility in a store window display. The teddy bear, with its arms and legs spread out in a welcoming gesture…</div>
+            <div class="gen"><b>GEN (10w):</b> a white bear sitting on a chair in a store</div>
+          </td>
+          <td class="score">4.6%</td>
+        </tr><tr style="background:;">
+          <td class="idx">37</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000139892.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 158w):</b> In the image, a black bear is the main subject, captured in a close-up shot. The bear&#x27;s fur is a deep black color, giving it a majestic appearance. Its eyes, a light brown color, are wide open, and it…</div>
+            <div class="gen"><b>GEN (11w):</b> a black bear with a large head and a large nose</div>
+          </td>
+          <td class="score">4.5%</td>
+        </tr><tr style="background:;">
+          <td class="idx">21</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000341290.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 98w):</b> In the heart of the image, a small brown and white bird, possibly a sparrow, is perched confidently on a weathered wooden surface. The bird, with its brown head and white body speckled with brown spot…</div>
+            <div class="gen"><b>GEN (8w):</b> a house sparrow perches on a wooden table</div>
+          </td>
+          <td class="score">4.4%</td>
+        </tr><tr style="background:;">
+          <td class="idx">19</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000576776.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 160w):</b> The image captures a lively beach scene under a clear blue sky. Dominating the sky are two large kites, one red and one blue, soaring high above the sandy beach. The red kite, with its vibrant hue, st…</div>
+            <div class="gen"><b>GEN (7w):</b> people are flying kites on the beach</div>
+          </td>
+          <td class="score">4.3%</td>
+        </tr><tr style="background:;">
+          <td class="idx">39</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000467818.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 176w):</b> In the tranquil setting of this image, a mother elephant and her calf are captured in a moment of serenity. The mother elephant, with her majestic gray skin, stands on the left side of the image. Her …</div>
+            <div class="gen"><b>GEN (11w):</b> an elephant and a statue of a gandhara in the water</div>
+          </td>
+          <td class="score">4.1%</td>
+        </tr><tr style="background:;">
+          <td class="idx">31</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000127296.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 152w):</b> The image captures a lively scene on a city street at night. A group of people, dressed in formal attire, are congregated on the sidewalk, engaged in what appears to be a discussion. They are standing…</div>
+            <div class="gen"><b>GEN (9w):</b> a group of people sitting on a street corner</div>
+          </td>
+          <td class="score">4.0%</td>
+        </tr><tr style="background:;">
+          <td class="idx">15</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000308590.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 146w):</b> In the center of the image, a skateboarder is captured in mid-air, performing a daring trick at a skatepark. The skateboarder, shirtless and wearing blue jeans, is upside down with his skateboard flip…</div>
+            <div class="gen"><b>GEN (9w):</b> the skateboarder is doing a trick on a skateboard</div>
+          </td>
+          <td class="score">3.9%</td>
+        </tr><tr style="background:;">
+          <td class="idx">11</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000451392.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 178w):</b> The image captures a moment at a train station where a majestic black steam locomotive, numbered 36115, is stationed. The locomotive is adorned with a vibrant red and white &quot;The Waverley&quot; sign on its …</div>
+            <div class="gen"><b>GEN (6w):</b> a steam locomotive on the tracks</div>
+          </td>
+          <td class="score">3.8%</td>
+        </tr><tr style="background:;">
+          <td class="idx">26</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000209132.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 121w):</b> In the heart of a bustling city, a man and a bronze statue share a moment of quiet companionship on a stone bench. The man, dressed in a blue shirt and black pants, sits with his chin resting on his h…</div>
+            <div class="gen"><b>GEN (14w):</b> two men sitting on a bench in front of a statue of a man</div>
+          </td>
+          <td class="score">3.7%</td>
+        </tr><tr style="background:;">
+          <td class="idx">27</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000360434.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 119w):</b> In the sepia-toned image, a solitary figure is captured in a moment of rest on a white bench. The person, clad in a vibrant red jacket and black pants, is lying on their side, their head resting on th…</div>
+            <div class="gen"><b>GEN (14w):</b> a man sitting on a bench in front of a statue of a man</div>
+          </td>
+          <td class="score">3.4%</td>
+        </tr><tr style="background:;">
+          <td class="idx">38</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000308265.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 174w):</b> The image captures a cozy living room bathed in warm yellow light. Dominating the left side of the room is a large flat screen TV, perched on a wooden stand. Adjacent to it, a red ottoman adds a pop o…</div>
+            <div class="gen"><b>GEN (9w):</b> a living room with a couch, tv, and chairs</div>
+          </td>
+          <td class="score">3.4%</td>
+        </tr><tr style="background:;">
+          <td class="idx">40</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000537774.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 114w):</b> In the heart of a bustling restaurant kitchen, three chefs are engrossed in their culinary tasks. The chef on the left, donned in a white apron, is meticulously plating a dish, his focus unwavering. I…</div>
+            <div class="gen"><b>GEN (6w):</b> the kitchen staff at the restaurant</div>
+          </td>
+          <td class="score">3.4%</td>
+        </tr><tr style="background:;">
+          <td class="idx">25</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000472079.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 186w):</b> The image captures a bustling scene at an airport terminal. The terminal is bathed in natural light streaming in from the large windows on the left. The floor beneath is a checkerboard pattern of blac…</div>
+            <div class="gen"><b>GEN (10w):</b> a group of people sitting in the airport waiting area</div>
+          </td>
+          <td class="score">3.4%</td>
+        </tr><tr style="background:;">
+          <td class="idx">12</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000168686.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 157w):</b> In the center of the image, a white countertop serves as the stage for a vibrant display of fresh produce. On the left, two bunches of green broccoli stand tall, their florets tightly packed. Adjacent…</div>
+            <div class="gen"><b>GEN (6w):</b> blueberries and oranges in a basket</div>
+          </td>
+          <td class="score">3.3%</td>
+        </tr><tr style="background:;">
+          <td class="idx">5</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000546164.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 80w):</b> In the image, there are two zebras standing on a dirt ground. The zebra on the left is facing the camera, while the zebra on the right is facing away from the camera. Both zebras have black and white …</div>
+            <div class="gen"><b>GEN (7w):</b> two zebras are walking in the grass</div>
+          </td>
+          <td class="score">3.1%</td>
+        </tr><tr style="background:;">
+          <td class="idx">18</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000314693.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 153w):</b> In the tranquil setting of this image, a white bicycle, equipped with a black seat and handlebars, is parked on a cobblestone path. The bicycle is positioned on the right side of the image, facing tow…</div>
+            <div class="gen"><b>GEN (10w):</b> a bike is parked on the side of the river</div>
+          </td>
+          <td class="score">2.9%</td>
+        </tr><tr style="background:;">
+          <td class="idx">36</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000147873.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 216w):</b> The image captures a scene from a kitchen, bathed in the soft glow of ambient light. Dominating the center of the room is a large stainless steel sink, its surface gleaming under the light. Adjacent t…</div>
+            <div class="gen"><b>GEN (8w):</b> a kitchen with a sink and a stove</div>
+          </td>
+          <td class="score">2.9%</td>
+        </tr><tr style="background:;">
+          <td class="idx">34</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000492286.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 175w):</b> The image captures a moment at a train station. Dominating the scene is a red and white train, its vibrant colors standing out against the more muted tones of the station. The train is in motion, head…</div>
+            <div class="gen"><b>GEN (9w):</b> a red tube train is parked on a platform</div>
+          </td>
+          <td class="score">2.7%</td>
+        </tr><tr style="background:;">
+          <td class="idx">32</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000117319.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 154w):</b> In the heart of a winter wonderland, two skiers are poised for adventure on a snowy mountain. The skier on the left, clad in a vibrant green jacket and crisp white pants, is holding ski poles, ready t…</div>
+            <div class="gen"><b>GEN (6w):</b> two people skiing down a mountain</div>
+          </td>
+          <td class="score">2.7%</td>
+        </tr><tr style="background:;">
+          <td class="idx">3</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000323479.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 183w):</b> This is a black and white photograph capturing a moment on a bustling street in Paris, France. The scene is dominated by two individuals seated on a bench, engrossed in their own world. The bench, pos…</div>
+            <div class="gen"><b>GEN (9w):</b> a couple sitting on a bench in the street</div>
+          </td>
+          <td class="score">2.4%</td>
+        </tr><tr style="background:;">
+          <td class="idx">6</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000264926.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 164w):</b> The image captures a lively scene on a bustling street corner in New York City. The perspective is from a pedestrian&#x27;s viewpoint on the sidewalk, immersing the viewer in the city&#x27;s vibrant atmosphere.…</div>
+            <div class="gen"><b>GEN (9w):</b> a group of students are walking down the street</div>
+          </td>
+          <td class="score">2.4%</td>
+        </tr><tr style="background:;">
+          <td class="idx">28</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000205560.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 197w):</b> The image captures a scene of organized chaos on a wooden desk. Dominating the left side of the desk is an open laptop, its screen glowing with unseen data. Adjacent to it, a white pen lies idle, its …</div>
+            <div class="gen"><b>GEN (11w):</b> a laptop on a table with a pen and a phone</div>
+          </td>
+          <td class="score">2.1%</td>
+        </tr><tr style="background:;">
+          <td class="idx">22</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000108758.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 128w):</b> The image presents a pair of toothbrushes, each encased in a vibrant green packaging. The packaging is adorned with a photograph of a man&#x27;s face, adding a personal touch to the product. The toothbrush…</div>
+            <div class="gen"><b>GEN (6w):</b> two toothbrushes in a plastic container</div>
+          </td>
+          <td class="score">1.8%</td>
+        </tr><tr style="background:;">
+          <td class="idx">29</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000058385.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 161w):</b> In the heart of a verdant landscape, a majestic gray elephant stands as the centerpiece of this image. The elephant, with its trunk extended towards the ground, appears to be in a state of exploration…</div>
+            <div class="gen"><b>GEN (5w):</b> an elephant in the bush</div>
+          </td>
+          <td class="score">1.4%</td>
+        </tr><tr style="background:;">
+          <td class="idx">24</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000499007.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 157w):</b> In the heart of a dry savanna, a family of six majestic elephants is captured in a moment of tranquility. The elephants, a mix of gray and brown hues, are scattered across the landscape, their bodies …</div>
+            <div class="gen"><b>GEN (4w):</b> elephants in the bush</div>
+          </td>
+          <td class="score">1.4%</td>
+        </tr><tr style="background:;">
+          <td class="idx">9</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000433301.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 194w):</b> The image captures a delightful bento box, a traditional Japanese meal served in a compartmentalized box. The box is divided into three sections, each filled with a variety of colorful and appetizing …</div>
+            <div class="gen"><b>GEN (9w):</b> a lunch box with a panda and a bear</div>
+          </td>
+          <td class="score">1.2%</td>
+        </tr><tr style="background:;">
+          <td class="idx">13</td>
+          <td><img src="http://images.cocodataset.org/train2017/000000435342.jpg" loading="lazy" /></td>
+          <td class="qa">
+            <div class="gt"><b>GT (preview, 128w):</b> In the heart of a winter wonderland, two skiers are carving their way down a snowy mountain. The skier in the foreground, donned in a vibrant yellow jacket and black pants, is in the midst of a gracef…</div>
+            <div class="gen"><b>GEN (10w):</b> a young boy and his mother skiing on the slopes</div>
+          </td>
+          <td class="score">0.0%</td>
+        </tr></tbody>
+      </table>
+    </section>
+<section id="takeaway">
+<h2>结论 / Stage-2 之前需要解决的</h2>
+<ol>
+  <li><b>Caption capability 已基本就位</b> — 37/40 LLaVA 样本能产生合理英文 caption,场景关键词匹配 ~10%。projector 已经把视觉特征对齐到语言空间。</li>
+  <li><b>OCR 能力是涌现的副产品</b> — TextVQA 7.5% 全是 caption 中"顺手"读出的字。Stage-2 的 TextVQA / OCR-VQA 数据应能 boost 到 30%+。</li>
+  <li><b>Grounding (RefCOCO) 需要新数据格式</b> — 模型没学过 bbox。同时 RefCOCO ref 字段有 bug,Stage-2 训练前要修。</li>
+  <li><b>长 caption 是 Stage-2 的硬目标</b> — 当前平均 9.7 词 vs ShareGPT4V GT 150 词。</li>
+</ol>
+<p class="note">下一步:Stage-2 多任务训练后,在<b>同样 4 个 task、同样 caption-only + with-question 双模式</b>下重测。三个直观可衡量的 delta:LLaVA with-question 0% → 30%+;TextVQA substring match 7.5% → 30%+;ShareGPT4V 平均长度 9.7 词 → 80+ 词,repetition 仍 ≤ 5%。</p>
+</section>
+<hr style="margin-top: 48px;" />
+<p style="color:#9ca3af; font-size:12px;">Generated from Drive: <code>/qwenvl3/eval_baseline/checkpoint-8000/baseline_*_caption.json</code> · TextVQA/RefCOCO 图来自 Drive 本地缓存(70/80) · LLaVA/ShareGPT4V 图通过 <code>images.cocodataset.org</code> 加载 · 生成时间:2026-05-02</p>
+</body></html>
