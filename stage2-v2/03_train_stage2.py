@@ -128,20 +128,44 @@ class ProjectorSaverCallback(TrainerCallback):
 # 数据集装配 — Phase 1+ 包含 6 个 task
 # ============================================================================
 
-def _try_load_hf_dataset(local_dir: Path, splits=("train", "validation", "val", "test")):
-    """通用：尝试从 local_dir 加载某个 split，失败就 fallback 到 first available。"""
+def _try_load_hf_dataset(local_dir: Path, label: str,
+                         splits=("train", "validation", "val", "test"),
+                         require_train: bool = True):
+    """通用：尝试从 local_dir 加载某个 split，**显式打印用了哪个**。
+
+    require_train=True 时，如果只能 fallback 到 val/test 会打印警告 ——
+    防止 lmms-lab/RefCOCO 那种 silent fallback 到 val（你以为在训 train，
+    实际在训 eval set，会污染未来评测）。
+    """
     from datasets import load_dataset
+
     for split in splits:
         try:
-            return load_dataset(str(local_dir), split=split, trust_remote_code=True)
+            ds = load_dataset(str(local_dir), split=split, trust_remote_code=True)
+            if split != "train" and require_train:
+                print(f"  ⚠️  [{label}] 没找到 train split！实际加载了 split={split} "
+                      f"(n={len(ds)})。这是 eval split，不应用于训练！")
+                print(f"      建议：换有 train split 的数据源（如 jxu124/refcoco）。")
+            else:
+                print(f"  ✅ [{label}] 加载 split={split} (n={len(ds)})")
+            return ds, split
         except Exception:
             continue
+
+    # 都失败：尝试不指定 split 加载第一个
     try:
         ds_dict = load_dataset(str(local_dir), trust_remote_code=True)
         first = list(ds_dict.keys())[0]
-        return ds_dict[first]
-    except Exception:
-        return None
+        ds = ds_dict[first]
+        if first != "train" and require_train:
+            print(f"  ⚠️  [{label}] 只找到 split={first} (n={len(ds)})。"
+                  f"这不是 train，谨慎使用。")
+        else:
+            print(f"  ✅ [{label}] 加载 split={first} (n={len(ds)})")
+        return ds, first
+    except Exception as e:
+        print(f"  ❌ [{label}] 加载失败: {e}")
+        return None, None
 
 
 def build_task_datasets(args, coco_loader: CocoZipLoader):
@@ -158,49 +182,64 @@ def build_task_datasets(args, coco_loader: CocoZipLoader):
     else:
         print(f"[skip] llava_instruct (json 不存在 或 n=0)")
 
-    # ---- 2. RefCOCO (50K，跟 v1 一样) ----
-    rc_dir = data_root / "refcoco"
+    # ---- 2. RefCOCO train (jxu124, 42K) ----
+    rc_dir = data_root / "refcoco_train"   # 改用 _train 后缀目录（jxu124，含 train split）
     if rc_dir.exists() and any(rc_dir.iterdir()) and args.n_refcoco > 0:
-        hf_ds = _try_load_hf_dataset(rc_dir)
+        hf_ds, split = _try_load_hf_dataset(rc_dir, "refcoco")
         if hf_ds is None:
             print("[skip] refcoco: 加载失败")
         else:
-            ds = RefCOCOTaskDataset(hf_ds, coco_loader=coco_loader,
-                                    limit=args.n_refcoco, source_name="refcoco")
+            ds = RefCOCOTaskDataset(
+                hf_ds, coco_loader=coco_loader,
+                limit=args.n_refcoco, source_name="refcoco",
+                bbox_format="xyxy",       # jxu124 用 xyxy 像素
+                random_caption=True,      # 训练时随机选 caption (3× 数据增强)
+            )
             task_dsets.append(("refcoco", ds))
             print(f"[task] refcoco: {len(ds)} 样本")
     else:
-        print(f"[skip] refcoco (目录不存在 或 n=0)")
+        print(f"[skip] refcoco (目录 {rc_dir} 不存在 或 n=0)")
 
-    # ---- 3. ⭐ RefCOCO+ (50K, 新增) ----
-    rcp_dir = data_root / "refcoco_plus"
+    # ---- 3. ⭐ RefCOCO+ train (尝试 jxu124 备选) ----
+    rcp_dir = data_root / "refcoco_plus_train"
     if rcp_dir.exists() and any(rcp_dir.iterdir()) and args.n_refcoco_plus > 0:
-        hf_ds = _try_load_hf_dataset(rcp_dir)
+        hf_ds, split = _try_load_hf_dataset(rcp_dir, "refcoco_plus")
         if hf_ds is None:
             print("[skip] refcoco_plus: 加载失败")
         else:
-            ds = RefCOCOTaskDataset(hf_ds, coco_loader=coco_loader,
-                                    limit=args.n_refcoco_plus,
-                                    source_name="refcoco_plus")
+            # bbox_format 看实际 repo 决定。jxu124 系列用 xyxy；如果是其他源，
+            # 可能还得手动调整。这里默认 xyxy + fallback 检查（_extract_bbox 会
+            # 检测是否归一化）。
+            ds = RefCOCOTaskDataset(
+                hf_ds, coco_loader=coco_loader,
+                limit=args.n_refcoco_plus, source_name="refcoco_plus",
+                bbox_format="xyxy",
+                random_caption=True,
+            )
             task_dsets.append(("refcoco_plus", ds))
             print(f"[task] refcoco_plus: {len(ds)} 样本  ⭐ Phase 1+ 新增")
     else:
-        print(f"[skip] refcoco_plus (目录不存在 或 n=0)")
+        print(f"[skip] refcoco_plus (目录 {rcp_dir} 不存在 或 n=0)")
+        print(f"        如果 RefCOCO+ HF 没有 train split repo，跳过即可，"
+              f"Phase 1+ 用 RefCOCO + RefCOCOg 训也成立。")
 
-    # ---- 4. ⭐ RefCOCOg (80K, 新增) ----
-    rcg_dir = data_root / "refcocog"
+    # ---- 4. ⭐ RefCOCOg train (jxu124, 42K) ----
+    rcg_dir = data_root / "refcocog_train"
     if rcg_dir.exists() and any(rcg_dir.iterdir()) and args.n_refcocog > 0:
-        hf_ds = _try_load_hf_dataset(rcg_dir)
+        hf_ds, split = _try_load_hf_dataset(rcg_dir, "refcocog")
         if hf_ds is None:
             print("[skip] refcocog: 加载失败")
         else:
-            ds = RefCOCOTaskDataset(hf_ds, coco_loader=coco_loader,
-                                    limit=args.n_refcocog,
-                                    source_name="refcocog")
+            ds = RefCOCOTaskDataset(
+                hf_ds, coco_loader=coco_loader,
+                limit=args.n_refcocog, source_name="refcocog",
+                bbox_format="xyxy",
+                random_caption=True,
+            )
             task_dsets.append(("refcocog", ds))
             print(f"[task] refcocog: {len(ds)} 样本  ⭐ Phase 1+ 新增")
     else:
-        print(f"[skip] refcocog (目录不存在 或 n=0)")
+        print(f"[skip] refcocog (目录 {rcg_dir} 不存在 或 n=0)")
 
     # ---- 5. ShareGPT4V (100K，跟 v1 一样) ----
     sg_dir = data_root / "sharegpt4v"
@@ -221,7 +260,7 @@ def build_task_datasets(args, coco_loader: CocoZipLoader):
     # ---- 6. ⭐ TextVQA (28K, 新增) ----
     tv_dir = data_root / "textvqa"
     if tv_dir.exists() and any(tv_dir.iterdir()) and args.n_textvqa > 0:
-        hf_ds = _try_load_hf_dataset(tv_dir)
+        hf_ds, split = _try_load_hf_dataset(tv_dir, "textvqa")
         if hf_ds is None:
             print("[skip] textvqa: 加载失败")
         else:

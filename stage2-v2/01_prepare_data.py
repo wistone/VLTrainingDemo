@@ -154,39 +154,66 @@ def task_refcoco():
     return False
 
 
-def task_refcoco_plus():
-    """RefCOCO+ — 跟 RefCOCO 同源但禁位置词，更考验"理解物体属性"。
+def task_refcoco_train():
+    """⭐ RefCOCO **训练数据** (jxu124, 含 train split, 42K)。
 
-    HF repo 命名因 mirror 而异，按候选顺序尝试。
+    与 lmms-lab/RefCOCO（仅 val/testA/testB）不同：jxu124/refcoco 提供完整 train split。
+    存到独立目录 refcoco_train/ —— eval 用的 lmms-lab 版仍保留在 refcoco/ 不动。
+    """
+    return hf_download(
+        repo_id="jxu124/refcoco", repo_type="dataset",
+        target_dir=DRIVE_ROOT / "refcoco_train",
+        label="RefCOCO train (jxu124, 42K)",
+    )
+
+
+def task_refcocog_train():
+    """⭐ RefCOCOg **训练数据** (jxu124, 含 train split, 42K)。"""
+    return hf_download(
+        repo_id="jxu124/refcocog", repo_type="dataset",
+        target_dir=DRIVE_ROOT / "refcocog_train",
+        label="RefCOCOg train (jxu124, 42K)",
+    )
+
+
+def task_refcoco_plus_train():
+    """⭐ RefCOCO+ **训练数据**。
+
+    jxu124 系列没有 refcoco-plus repo，按候选 fallback 尝试。
+    全部失败时打印警告并返回 False —— Phase 1+ 仍可只用 RefCOCO + RefCOCOg 训。
     """
     candidates = [
-        "lmms-lab/RefCOCOplus",   # 最常见
-        "lmms-lab/RefCOCO+",      # 带 + 号的写法
-        "jxu124/refcoco-plus",
+        "jxu124/refcoco_plus",       # 用下划线
+        "jxu124/refcoco-plus",       # 用连字符
+        "lmms-lab/refcoco_plus",
+        "Multimodal-Fatima/RefCOCOplus_train",
     ]
     for repo_id in candidates:
         ok = hf_download(
             repo_id=repo_id, repo_type="dataset",
-            target_dir=DRIVE_ROOT / "refcoco_plus",
-            label=f"RefCOCO+ (尝试 {repo_id})",
+            target_dir=DRIVE_ROOT / "refcoco_plus_train",
+            label=f"RefCOCO+ train (尝试 {repo_id})",
         )
         if ok:
             return True
-    print(f"  [info] RefCOCO+ 全部候选都失败；可手动确认 HF 上的 repo 名后改本脚本。")
+    print(f"  [info] RefCOCO+ train 所有候选都失败。")
+    print(f"  [info] Phase 1+ 训练会自动跳过 RefCOCO+，只用 RefCOCO + RefCOCOg；")
+    print(f"  [info] 如需补 RefCOCO+，手动找有 train split 的 HF repo，下到 "
+          f"{DRIVE_ROOT / 'refcoco_plus_train'} 即可被识别。")
     return False
 
 
-def task_refcocog():
-    """RefCOCOg — 长 description 指代（"the woman in green dress holding a phone"）。"""
-    candidates = [
-        "lmms-lab/RefCOCOg",
-        "jxu124/refcocog",
-    ]
-    for repo_id in candidates:
+# ---- 保留 lmms-lab 版（仅 val/test，给 04_eval_stage2 用）----
+# 旧函数 task_refcoco / task_refcocog 不动，但下到的目录里只有 val/test split，
+# 不要给训练用，所以训练专用目录改名为 _train 后缀。
+
+def task_refcoco_lmms_for_eval():
+    """RefCOCO eval 数据（lmms-lab，仅 val/testA/testB）。已有的话跳过。"""
+    for repo_id in ["lmms-lab/RefCOCO", "jxu124/refcoco"]:
         ok = hf_download(
             repo_id=repo_id, repo_type="dataset",
-            target_dir=DRIVE_ROOT / "refcocog",
-            label=f"RefCOCOg (尝试 {repo_id})",
+            target_dir=DRIVE_ROOT / "refcoco",
+            label=f"RefCOCO eval (lmms-lab) (尝试 {repo_id})",
         )
         if ok:
             return True
@@ -211,53 +238,67 @@ def task_sharegpt4v():
 # ============================================================================
 
 def verify_phase1plus():
-    """验证 Phase 1+ 新增/复用的数据集都能被 datasets.load_dataset 正确加载。"""
+    """验证 Phase 1+ 新增/复用的数据集都能被 datasets.load_dataset 正确加载，
+    并**显式检查 train split** 是否存在（避免 silent fallback 到 val）。"""
     try:
         from datasets import load_dataset
     except ImportError:
         print("  [skip verify] datasets 未安装")
         return
 
-    datasets_to_check = [
-        ("RefCOCO+",  DRIVE_ROOT / "refcoco_plus"),
-        ("RefCOCOg",  DRIVE_ROOT / "refcocog"),
-        ("TextVQA",   DRIVE_ROOT / "textvqa"),
+    # 训练用 dataset：必须有 train split
+    train_datasets = [
+        ("RefCOCO train",    DRIVE_ROOT / "refcoco_train"),
+        ("RefCOCOg train",   DRIVE_ROOT / "refcocog_train"),
+        ("RefCOCO+ train",   DRIVE_ROOT / "refcoco_plus_train"),
+        ("TextVQA",          DRIVE_ROOT / "textvqa"),
     ]
-    for name, path in datasets_to_check:
+    print("\n--- 训练数据集（必须有 train split）---")
+    for name, path in train_datasets:
         if not path.exists() or not any(path.iterdir()):
-            print(f"  [verify] {name}: 目录不存在/为空，跳过")
+            print(f"  [verify] {name}: ⚠️ 目录不存在或为空 ({path})")
             continue
         try:
-            # 不锁 split，让 datasets 自己探测
-            ds = None
-            for split in ["train", "validation", "val", "test"]:
-                try:
-                    ds = load_dataset(str(path), split=split, trust_remote_code=True)
-                    break
-                except Exception:
-                    continue
-            if ds is None:
-                ds_dict = load_dataset(str(path), trust_remote_code=True)
-                split = list(ds_dict.keys())[0]
-                ds = ds_dict[split]
+            ds_dict = load_dataset(str(path), trust_remote_code=True)
+            splits = {k: len(v) for k, v in ds_dict.items()}
+            has_train = "train" in splits
+            mark = "✅" if has_train else "⚠️"
+            print(f"  [verify] {name}: {mark} splits={splits}")
+            if has_train:
+                sample = ds_dict["train"][0]
+                fields = list(sample.keys())[:10]
+                print(f"             train fields: {fields}")
+                if "RefCOCO" in name:
+                    bbox = sample.get("bbox")
+                    captions = sample.get("captions")
+                    img_id = sample.get("image_id")
+                    print(f"             sample[0]: image_id={img_id}, "
+                          f"bbox={bbox}, captions[:1]={captions[:1] if captions else None}")
+                elif name == "TextVQA":
+                    q = sample.get("question", "")
+                    a = sample.get("answers", [])
+                    print(f"             sample[0]: Q={q[:60]!r}, answers[:3]={a[:3] if isinstance(a, list) else a}")
             else:
-                pass  # split 已找到
-            n = len(ds)
-            keys = list(ds.features.keys())[:8]
-            print(f"  [verify] {name}: ✅ n={n}, fields={keys}")
-            sample = ds[0]
-            # 简单字段抽查
-            if name in ("RefCOCO+", "RefCOCOg"):
-                ref = sample.get("answer") or sample.get("sentences") or sample.get("ref")
-                bbox = sample.get("bbox") or sample.get("box")
-                print(f"             sample0: ref={str(ref)[:80]!r}, bbox={bbox}")
-            elif name == "TextVQA":
-                q = sample.get("question") or ""
-                a = sample.get("answers") or []
-                print(f"             sample0: Q={q[:80]!r}, "
-                      f"answers[:3]={a[:3] if isinstance(a, list) else a}")
+                print(f"             ⚠️ 没有 train split！只有 {list(splits.keys())}。"
+                      f"训练时不可用。")
         except Exception as e:
-            print(f"  [verify] {name}: ⚠️ 加载/解析失败: {e}")
+            print(f"  [verify] {name}: ⚠️ 加载失败: {e}")
+
+    # eval 用 dataset：val/test split OK
+    eval_datasets = [
+        ("RefCOCO eval (lmms-lab)", DRIVE_ROOT / "refcoco"),
+    ]
+    print("\n--- 评测数据集（val/test split 即可）---")
+    for name, path in eval_datasets:
+        if not path.exists() or not any(path.iterdir()):
+            print(f"  [verify] {name}: 跳过 ({path} 不存在)")
+            continue
+        try:
+            ds_dict = load_dataset(str(path), trust_remote_code=True)
+            splits = {k: len(v) for k, v in ds_dict.items()}
+            print(f"  [verify] {name}: ✅ splits={splits}")
+        except Exception as e:
+            print(f"  [verify] {name}: ⚠️ 加载失败: {e}")
 
 
 # ============================================================================
@@ -265,13 +306,17 @@ def verify_phase1plus():
 # ============================================================================
 
 ALL_TASKS = {
-    "llava_instruct": (task_llava_instruct, "v1_existing"),
-    "coco":           (task_coco_images,    "v1_existing"),
-    "textvqa":        (task_textvqa,        "v1_existing"),
-    "refcoco":        (task_refcoco,        "v1_existing"),
-    "sharegpt4v":     (task_sharegpt4v,     "v1_existing"),
-    "refcoco_plus":   (task_refcoco_plus,   "phase1plus_new"),  # ⭐
-    "refcocog":       (task_refcocog,       "phase1plus_new"),  # ⭐
+    # v1 已有数据集
+    "llava_instruct":      (task_llava_instruct,           "v1_existing"),
+    "coco":                (task_coco_images,              "v1_existing"),
+    "textvqa":             (task_textvqa,                  "v1_existing"),
+    "sharegpt4v":          (task_sharegpt4v,               "v1_existing"),
+    # eval 用的 lmms-lab（已有，跳过）
+    "refcoco_lmms_eval":   (task_refcoco_lmms_for_eval,    "eval_only"),
+    # ⭐ Phase 1+ 训练用（jxu124，含 train split）
+    "refcoco_train":       (task_refcoco_train,            "phase1plus_new"),
+    "refcocog_train":      (task_refcocog_train,           "phase1plus_new"),
+    "refcoco_plus_train":  (task_refcoco_plus_train,       "phase1plus_new"),
 }
 
 

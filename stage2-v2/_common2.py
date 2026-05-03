@@ -157,80 +157,160 @@ class LlavaInstructTaskDataset(Dataset):
 class RefCOCOTaskDataset(Dataset):
     """RefCOCO/RefCOCO+/RefCOCOg grounding — (ref, bbox) → bbox 输出。
 
-    Phase 1+ 重要变化：**这同一个类同时被 RefCOCO / RefCOCO+ / RefCOCOg 复用**，
-    只是初始化时传入的 hf_dataset 来自不同 HF repo。
+    支持两种数据源（自动适配，但建议显式传 bbox_format）:
+
+    1) **jxu124 系列**（用于训练，有 train split）
+       字段: image_id (int), bbox (xyxy 像素), captions (list[str]),
+             sentences (list[dict]), file_name
+       图片: 不 bundle，要从 COCO zip 通过 image_id 查找
+       bbox_format: "xyxy"
+       captions: 多个指代表达，训练时随机取一个 (random_caption=True)
+
+    2) **lmms-lab 系列**（用于 eval，只有 val/test split）
+       字段: image (PIL/bytes), bbox (xywh 像素), answer (单个 ref str)
+       图片: bundle 在 image 字段
+       bbox_format: "xywh"
+       captions: 单个 (answer)
     """
     def __init__(self, hf_dataset, coco_loader: Optional[CocoZipLoader] = None,
-                 limit=None, source_name="refcoco"):
+                 limit=None, source_name="refcoco",
+                 bbox_format: str = "xywh",  # "xywh" (lmms-lab) or "xyxy" (jxu124)
+                 random_caption: bool = True):
         self.ds = hf_dataset
         self.indices = list(range(len(hf_dataset)))[:limit] if limit else list(range(len(hf_dataset)))
         self.coco_loader = coco_loader
-        self.source_name = source_name  # 'refcoco' / 'refcoco_plus' / 'refcocog'
+        self.source_name = source_name
+        assert bbox_format in ("xywh", "xyxy"), f"bbox_format must be xywh|xyxy, got {bbox_format}"
+        self.bbox_format = bbox_format
+        self.random_caption = random_caption
 
         if len(hf_dataset) > 0:
             keys = list(hf_dataset[0].keys())
-            print(f"  [{source_name}] HF dataset 字段: {keys[:8]}")
+            print(f"  [{source_name}] HF dataset 字段: {keys[:10]}")
+            print(f"  [{source_name}] bbox_format={bbox_format}, random_caption={random_caption}")
 
     def __len__(self):
         return len(self.indices)
 
     def _extract_image_and_size(self, s) -> Optional[Tuple[Image.Image, Tuple[int, int]]]:
+        # ---- 1) lmms-lab: image 字段含 bytes 或 PIL ----
         img_field = s.get("image")
         if isinstance(img_field, dict) and "bytes" in img_field:
-            img = Image.open(io.BytesIO(img_field["bytes"])).convert("RGB")
-        elif hasattr(img_field, "convert"):
-            img = img_field.convert("RGB")
-        elif isinstance(img_field, str) and self.coco_loader:
             try:
-                img = self.coco_loader.open(img_field)
-            except FileNotFoundError:
-                return None
-        else:
+                img = Image.open(io.BytesIO(img_field["bytes"])).convert("RGB")
+                return img, img.size
+            except Exception:
+                pass
+        if hasattr(img_field, "convert"):
+            img = img_field.convert("RGB")
+            return img, img.size
+
+        # ---- 2) jxu124: 从 COCO train2017.zip 查图 ----
+        if self.coco_loader is None:
             return None
-        return img, img.size
+
+        # 优先用 image_id (整数)
+        image_id = s.get("image_id")
+        if image_id is None:
+            # fallback: 从 file_name / image_path 抠数字
+            import re  # noqa: PLC0415
+            for key in ["image_path", "file_name"]:
+                v = s.get(key, "")
+                if not isinstance(v, str):
+                    continue
+                # COCO 文件名格式: ...000000581857.jpg 或 COCO_train2014_000000581857_16.jpg
+                m = re.search(r"(\d{6,})", v)
+                if m:
+                    image_id = int(m.group(1))
+                    break
+        if image_id is None:
+            return None
+
+        # train2017.zip 里的文件名格式: train2017/000000XXXXXX.jpg
+        # COCO 2014 / 2017 共享 image_id 数字，但部分 2014 图不在 train2017 里
+        fn = f"{int(image_id):012d}.jpg"
+        try:
+            img = self.coco_loader.open(fn)
+            return img, img.size
+        except FileNotFoundError:
+            return None
 
     def _extract_ref(self, s) -> Optional[str]:
-        for key in ["answer", "sentences", "sentence", "ref",
-                    "referring_expression", "caption"]:
+        # ---- 1) jxu124: captions (list[str]) ----
+        captions = s.get("captions")
+        if isinstance(captions, list) and captions:
+            valid = [c for c in captions if isinstance(c, str) and c.strip()]
+            if valid:
+                return random.choice(valid).strip() if self.random_caption else valid[0].strip()
+
+        # ---- 2) jxu124: sentences (list[dict]) ----
+        sentences = s.get("sentences")
+        if isinstance(sentences, list) and sentences:
+            sents = []
+            for x in sentences:
+                if isinstance(x, dict):
+                    sent = x.get("sent") or x.get("raw") or x.get("text")
+                    if isinstance(sent, str) and sent.strip():
+                        sents.append(sent.strip())
+                elif isinstance(x, str) and x.strip():
+                    sents.append(x.strip())
+            if sents:
+                return random.choice(sents) if self.random_caption else sents[0]
+
+        # ---- 3) lmms-lab: 单 ref 字段 ----
+        for key in ["answer", "sentence", "ref", "referring_expression", "caption"]:
             v = s.get(key)
-            if isinstance(v, list) and v:
-                v = v[0]
-                if isinstance(v, dict):
-                    v = v.get("sent") or v.get("raw") or v.get("text")
-                if isinstance(v, str) and v.strip():
-                    return v.strip()
-            elif isinstance(v, str) and v.strip():
+            if isinstance(v, str) and v.strip():
                 return v.strip()
+            elif isinstance(v, list) and v:
+                first = v[0]
+                if isinstance(first, str) and first.strip():
+                    return first.strip()
+
         return None
 
     def _extract_bbox(self, s, im_size) -> Optional[Tuple[float, float, float, float]]:
-        bbox = s.get("bbox") or s.get("box") or s.get("answer")
+        bbox = s.get("bbox") or s.get("box")
         if not bbox or len(bbox) != 4:
             return None
         iw, ih = im_size
-        if max(bbox) > 1.5:
+        # 已经归一化 0-1?
+        if max(bbox) <= 1.5:
+            return tuple(bbox)
+        # 像素坐标，按 bbox_format 解析
+        if self.bbox_format == "xyxy":
+            x1, y1, x2, y2 = bbox
+            return (x1 / iw, y1 / ih, x2 / iw, y2 / ih)
+        else:  # xywh (COCO 默认)
             x, y, w, h = bbox
             return (x / iw, y / ih, (x + w) / iw, (y + h) / ih)
-        return tuple(bbox)
 
     def __getitem__(self, idx):
         last_failure = "unknown"
-        for tries in range(20):
+        for tries in range(30):  # jxu124 部分图不在 train2017 里，多试几次
             i = self.indices[(idx + tries) % len(self.indices)]
             s = self.ds[i]
             img_pair = self._extract_image_and_size(s)
             if img_pair is None:
-                last_failure = f"image (sample keys: {list(s.keys())})"
+                last_failure = f"image (image_id={s.get('image_id')}; 可能不在 train2017.zip 里)"
                 continue
             ref = self._extract_ref(s)
             if ref is None:
-                last_failure = f"ref (sample keys: {list(s.keys())})"
+                last_failure = f"ref (sample keys: {list(s.keys())[:6]})"
                 continue
             image, im_size = img_pair
             bbox = self._extract_bbox(s, im_size)
             if bbox is None:
-                last_failure = f"bbox (raw bbox: {s.get('bbox')})"
+                last_failure = f"bbox (raw bbox: {s.get('bbox')}, format={self.bbox_format})"
                 continue
+
+            # 健全性检查：归一化坐标合法 (0 ≤ x1 < x2 ≤ 1, 0 ≤ y1 < y2 ≤ 1)
+            x1, y1, x2, y2 = bbox
+            if not (0 <= x1 < x2 <= 1.01 and 0 <= y1 < y2 <= 1.01):
+                last_failure = f"bbox 异常: {bbox} (im_size={im_size}, format={self.bbox_format})"
+                continue
+            # 防止小数误差越界
+            bbox = (max(0, x1), max(0, y1), min(1, x2), min(1, y2))
 
             conversations = [
                 {"from": "human", "value": f"<image>\nProvide the bounding box coordinates of {ref}."},
@@ -243,7 +323,7 @@ class RefCOCOTaskDataset(Dataset):
                 "bbox": bbox,
             }
         raise RuntimeError(
-            f"{self.source_name}: idx={idx} 连续 20 个样本解析失败。"
+            f"{self.source_name}: idx={idx} 连续 30 个样本解析失败。"
             f"最后失败原因: {last_failure}"
         )
 
