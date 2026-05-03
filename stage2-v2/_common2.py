@@ -1,8 +1,10 @@
 """Stage 2-v2 (Phase 1+) 共享工具。
 
 跟 stage2/_common2.py 区别：
-  ✨ 新增 TextVQATaskDataset    — OCR 类问答数据集（多数投票选答案 + 共识过滤）
-  ✨ RefCOCO+/g 不需要新类       — 复用 RefCOCOTaskDataset，只是 HF 数据路径不同
+  ✨ 新增 TextVQATaskDataset           — OCR 类问答（多数投票 + 共识过滤）
+  ✨ RefCOCOTaskDataset 支持 jxu124    — bbox xyxy + image_id 查 COCO zip + 多 caption
+  ✨ 新增 RefCOCOPickleTaskDataset     — 从 UNC 原版 pickle + COCO instances 加载，
+                                        HF 上找不到 RefCOCO+ train split 时备用
 
 设计要点（同 v1）：
 - 用 Qwen2.5 chat template 包装多轮对话
@@ -11,6 +13,7 @@
 """
 import io
 import json
+import pickle
 import random
 import zipfile
 from collections import Counter
@@ -325,6 +328,123 @@ class RefCOCOTaskDataset(Dataset):
         raise RuntimeError(
             f"{self.source_name}: idx={idx} 连续 30 个样本解析失败。"
             f"最后失败原因: {last_failure}"
+        )
+
+
+class RefCOCOPickleTaskDataset(Dataset):
+    """RefCOCO/+/g — 从 UNC 原版 pickle + COCO instances 加载。
+
+    用于：HF 上找不到带 train split 的 RefCOCO+ 镜像时，从 lichengunc/refer
+    GitHub 下载的原版数据。
+
+    需要文件：
+      - refs.p                  pickle，含每个 ref 的 ref_id, ann_id, sentences, split
+      - instances.json (或 instances_train2014.json)
+                                COCO 格式 annotations 文件，含 ann_id → bbox (xywh)
+
+    pickle 内每个 ref 字段:
+      ref_id      : int
+      ann_id      : int            ← join key 到 instances.json
+      image_id    : int            ← 用于查 train2017.zip
+      file_name   : str            (e.g. 'COCO_train2014_000000XXXX_Y.jpg')
+      split       : 'train'/'val'/'testA'/'testB'
+      sentences   : list[{sent_id, sent, raw, tokens}]
+      category_id : int
+
+    输出格式与 RefCOCOTaskDataset 一致，可直接 mix 进 MultitaskTrainingDataset。
+    """
+    def __init__(self, refs_pickle_path, instances_json_path,
+                 coco_loader: CocoZipLoader,
+                 limit=None, split: str = "train",
+                 source_name: str = "refcoco_plus",
+                 random_caption: bool = True):
+        # 1. 加载 refs pickle 并按 split 过滤
+        with open(refs_pickle_path, "rb") as f:
+            refs = pickle.load(f)
+        refs_train = [r for r in refs if r.get("split") == split]
+        before_filter = len(refs_train)
+        if limit:
+            refs_train = refs_train[:limit]
+        # 2. 加载 instances.json，构建 ann_id → bbox (xywh) 字典
+        with open(instances_json_path) as f:
+            instances = json.load(f)
+        ann_id_to_bbox = {}
+        for ann in instances.get("annotations", []):
+            bbox = ann.get("bbox")
+            if isinstance(bbox, list) and len(bbox) == 4:
+                ann_id_to_bbox[ann["id"]] = bbox  # xywh
+        # 3. 防御性：丢掉 ann_id 找不到 bbox 的 ref
+        refs_with_bbox = [r for r in refs_train if r.get("ann_id") in ann_id_to_bbox]
+
+        self.refs = refs_with_bbox
+        self.ann_id_to_bbox = ann_id_to_bbox
+        self.coco_loader = coco_loader
+        self.source_name = source_name
+        self.random_caption = random_caption
+
+        print(f"  [{source_name}] UNC pickle: split={split}, "
+              f"refs filtered: {len(refs_train)}/{len(refs)} → "
+              f"with bbox: {len(self.refs)}/{len(refs_train)}")
+        print(f"  [{source_name}] random_caption={random_caption}")
+
+    def __len__(self):
+        return len(self.refs)
+
+    def __getitem__(self, idx):
+        last_failure = "unknown"
+        for tries in range(30):
+            i = (idx + tries) % len(self.refs)
+            r = self.refs[i]
+
+            # 取图（image_id 查 COCO train2017.zip）
+            try:
+                fn = f"{int(r['image_id']):012d}.jpg"
+                image = self.coco_loader.open(fn)
+            except FileNotFoundError:
+                last_failure = f"image_id={r['image_id']} 不在 train2017"
+                continue
+            iw, ih = image.size
+
+            # bbox: xywh 像素 → xyxy 归一化
+            bbox = self.ann_id_to_bbox.get(r["ann_id"])
+            if not bbox:
+                last_failure = f"ann_id={r['ann_id']} 没找到 bbox"
+                continue
+            x, y, w, h = bbox
+            x1, y1, x2, y2 = x / iw, y / ih, (x + w) / iw, (y + h) / ih
+            if not (0 <= x1 < x2 <= 1.01 and 0 <= y1 < y2 <= 1.01):
+                last_failure = f"bbox 异常: {bbox}, im={iw}×{ih}"
+                continue
+            bbox_norm = (max(0, x1), max(0, y1), min(1, x2), min(1, y2))
+
+            # ref expression（多个 sentences 中随机选一）
+            sents = r.get("sentences", [])
+            sent_strs = []
+            for s in sents:
+                if isinstance(s, dict):
+                    txt = s.get("sent") or s.get("raw")
+                elif isinstance(s, str):
+                    txt = s
+                else:
+                    txt = None
+                if isinstance(txt, str) and txt.strip():
+                    sent_strs.append(txt.strip())
+            if not sent_strs:
+                last_failure = f"ref={r.get('ref_id')} 没有有效 sentence"
+                continue
+            ref = random.choice(sent_strs) if self.random_caption else sent_strs[0]
+
+            return {
+                "image": image,
+                "conversations": [
+                    {"from": "human", "value": f"<image>\nProvide the bounding box coordinates of {ref}."},
+                    {"from": "gpt",   "value": encode_bbox(bbox_norm)},
+                ],
+                "task": self.source_name,
+                "bbox": bbox_norm,
+            }
+        raise RuntimeError(
+            f"{self.source_name}: idx={idx} 连续 30 个 ref 失败。最后原因: {last_failure}"
         )
 
 

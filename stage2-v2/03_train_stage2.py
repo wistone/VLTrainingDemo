@@ -93,6 +93,7 @@ from _common2 import (  # noqa: E402
     LlavaInstructTaskDataset,
     MultitaskCollator,
     MultitaskTrainingDataset,
+    RefCOCOPickleTaskDataset,   # ⭐ UNC 原版 pickle 备用
     RefCOCOTaskDataset,
     ShareGPT4VTaskDataset,
     TextVQATaskDataset,    # ⭐ 新增
@@ -200,28 +201,47 @@ def build_task_datasets(args, coco_loader: CocoZipLoader):
     else:
         print(f"[skip] refcoco (目录 {rc_dir} 不存在 或 n=0)")
 
-    # ---- 3. ⭐ RefCOCO+ train (尝试 jxu124 备选) ----
+    # ---- 3. ⭐ RefCOCO+ train ----
+    # 检测两种格式：
+    #   (a) UNC 原版 pickle: 目录里有 refs.p + instances.json
+    #   (b) HF 数据集（jxu124 / others）: 通过 datasets.load_dataset 加载
     rcp_dir = data_root / "refcoco_plus_train"
-    if rcp_dir.exists() and any(rcp_dir.iterdir()) and args.n_refcoco_plus > 0:
-        hf_ds, split = _try_load_hf_dataset(rcp_dir, "refcoco_plus")
-        if hf_ds is None:
-            print("[skip] refcoco_plus: 加载失败")
-        else:
-            # bbox_format 看实际 repo 决定。jxu124 系列用 xyxy；如果是其他源，
-            # 可能还得手动调整。这里默认 xyxy + fallback 检查（_extract_bbox 会
-            # 检测是否归一化）。
-            ds = RefCOCOTaskDataset(
-                hf_ds, coco_loader=coco_loader,
-                limit=args.n_refcoco_plus, source_name="refcoco_plus",
-                bbox_format="xyxy",
+    refs_pickle = rcp_dir / "refs.p"
+    instances_json = rcp_dir / "instances.json"
+
+    if rcp_dir.exists() and args.n_refcoco_plus > 0:
+        if refs_pickle.exists() and instances_json.exists():
+            # 路径 (a): UNC 原版 pickle
+            print(f"[task] refcoco_plus: 检测到 UNC 原版 (refs.p + instances.json)")
+            ds = RefCOCOPickleTaskDataset(
+                refs_pickle_path=refs_pickle,
+                instances_json_path=instances_json,
+                coco_loader=coco_loader,
+                limit=args.n_refcoco_plus,
+                split="train",
+                source_name="refcoco_plus",
                 random_caption=True,
             )
             task_dsets.append(("refcoco_plus", ds))
-            print(f"[task] refcoco_plus: {len(ds)} 样本  ⭐ Phase 1+ 新增")
+            print(f"[task] refcoco_plus: {len(ds)} 样本  ⭐ Phase 1+ (UNC pickle)")
+        elif any(rcp_dir.iterdir()):
+            # 路径 (b): HF 数据集
+            hf_ds, split = _try_load_hf_dataset(rcp_dir, "refcoco_plus")
+            if hf_ds is None:
+                print("[skip] refcoco_plus: 加载失败")
+            else:
+                ds = RefCOCOTaskDataset(
+                    hf_ds, coco_loader=coco_loader,
+                    limit=args.n_refcoco_plus, source_name="refcoco_plus",
+                    bbox_format="xyxy",
+                    random_caption=True,
+                )
+                task_dsets.append(("refcoco_plus", ds))
+                print(f"[task] refcoco_plus: {len(ds)} 样本  ⭐ Phase 1+ (HF)")
+        else:
+            print(f"[skip] refcoco_plus: 目录 {rcp_dir} 为空")
     else:
         print(f"[skip] refcoco_plus (目录 {rcp_dir} 不存在 或 n=0)")
-        print(f"        如果 RefCOCO+ HF 没有 train split repo，跳过即可，"
-              f"Phase 1+ 用 RefCOCO + RefCOCOg 训也成立。")
 
     # ---- 4. ⭐ RefCOCOg train (jxu124, 42K) ----
     rcg_dir = data_root / "refcocog_train"
