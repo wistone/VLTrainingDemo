@@ -441,6 +441,10 @@ def parse_args():
     ap.add_argument("--projector_lr_mult", type=float, default=0.1)
     ap.add_argument("--warmup_ratio", type=float, default=0.03)
     ap.add_argument("--max_len",   type=int, default=1500)
+    ap.add_argument("--no_gradient_checkpointing", action="store_true",
+                    help="关闭 gradient checkpointing。"
+                         "默认开启可省 ~50% 显存但慢 30-40%。"
+                         "Blackwell/H100 等大显存卡上建议关掉换速度。")
 
     # Logging / saving
     ap.add_argument("--save_steps",    type=int, default=400,
@@ -484,7 +488,11 @@ def main():
     print_gpu_estimate(args, num_image_tokens)
 
     model, proj_module = setup_model_for_stage2(args, num_image_tokens)
-    model.gradient_checkpointing_enable()
+    if not args.no_gradient_checkpointing:
+        model.gradient_checkpointing_enable()
+        print("[mem] gradient_checkpointing: ON  (省显存 ~50%, 慢 30-40%)")
+    else:
+        print("[mem] gradient_checkpointing: OFF (吃显存 ~2x，速度快 30-40%)")
 
     # 数据
     coco_zip = Path(args.stage2_data_root) / "coco" / "train2017.zip"
@@ -526,8 +534,11 @@ def main():
         lr_scheduler_type="cosine",
         weight_decay=0.0,
         bf16=True,
-        gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
+        gradient_checkpointing=not args.no_gradient_checkpointing,
+        gradient_checkpointing_kwargs=(
+            {"use_reentrant": False}
+            if not args.no_gradient_checkpointing else None
+        ),
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
         save_total_limit=args.save_total_limit,
