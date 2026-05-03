@@ -261,17 +261,36 @@ def build_task_datasets(args, coco_loader: CocoZipLoader):
     else:
         print(f"[skip] refcocog (目录 {rcg_dir} 不存在 或 n=0)")
 
-    # ---- 5. ShareGPT4V (100K，跟 v1 一样) ----
+    # ---- 5. ShareGPT4V (100K) ----
+    # v1 bug 修复：v1 / v2 之前用 sorted()[0] 拿到的是 share-captioner_*.json
+    # （字母序在前，含 "-"），而我们其实更想要 sharegpt4v_instruct_*.json
+    # （GPT-4V 标注的更长更结构化的 caption，216 词 vs share-captioner 155 词）。
+    # 显式按偏好顺序找文件。
+    SHAREGPT4V_PREFERENCE = [
+        "sharegpt4v_instruct_gpt4-vision_cap100k.json",   # 优先：GPT-4V 详细长 caption
+        "share-captioner_coco_lcs_sam_1246k_1107.json",   # 备选：share-captioner（也行，略短）
+    ]
     sg_dir = data_root / "sharegpt4v"
     if sg_dir.exists() and args.n_sharegpt4v > 0:
         json_files = sorted(sg_dir.rglob("*.json"))
-        if json_files:
-            ds = ShareGPT4VTaskDataset(json_files[0], coco_loader, limit=args.n_sharegpt4v)
+        chosen = None
+        for preferred_name in SHAREGPT4V_PREFERENCE:
+            for f in json_files:
+                if f.name == preferred_name:
+                    chosen = f
+                    break
+            if chosen is not None:
+                break
+        if chosen is None and json_files:
+            chosen = json_files[0]
+            print(f"[warn] sharegpt4v: 优先列表里的文件都没找到，fallback 到 {chosen.name}")
+        if chosen is not None:
+            ds = ShareGPT4VTaskDataset(chosen, coco_loader, limit=args.n_sharegpt4v)
             if len(ds) > 0:
                 task_dsets.append(("sharegpt4v", ds))
-                print(f"[task] sharegpt4v: {len(ds)} 样本（COCO 子集）")
+                print(f"[task] sharegpt4v: {len(ds)} 样本（COCO 子集，文件={chosen.name}）")
             else:
-                print("[skip] sharegpt4v: 过滤后 0 样本")
+                print(f"[skip] sharegpt4v: {chosen.name} 过滤后 0 样本")
         else:
             print("[skip] sharegpt4v: 找不到 json")
     else:

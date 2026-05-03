@@ -175,18 +175,34 @@ def build_task_datasets(args, coco_loader: CocoZipLoader):
         print(f"[skip] refcoco")
 
     # ---- ShareGPT4V ----
+    # 显式偏好 sharegpt4v_instruct (GPT-4V 详细长 caption, 216 词)，
+    # 而不是 sorted()[0] 默认拿到的 share-captioner（155 词，字母序在前）。
+    # 改这一处后所有未来训练都会用更高质量的数据。
+    SHAREGPT4V_PREFERENCE = [
+        "sharegpt4v_instruct_gpt4-vision_cap100k.json",
+        "share-captioner_coco_lcs_sam_1246k_1107.json",
+    ]
     sg_dir = data_root / "sharegpt4v"
     if sg_dir.exists() and args.n_sharegpt4v > 0:
         json_files = sorted(sg_dir.rglob("*.json"))
-        if json_files:
-            ds = ShareGPT4VTaskDataset(
-                json_files[0], coco_loader, limit=args.n_sharegpt4v,
-            )
+        chosen = None
+        for preferred_name in SHAREGPT4V_PREFERENCE:
+            for f in json_files:
+                if f.name == preferred_name:
+                    chosen = f
+                    break
+            if chosen is not None:
+                break
+        if chosen is None and json_files:
+            chosen = json_files[0]
+            print(f"[warn] sharegpt4v: 优先列表里的文件都没找到，fallback 到 {chosen.name}")
+        if chosen is not None:
+            ds = ShareGPT4VTaskDataset(chosen, coco_loader, limit=args.n_sharegpt4v)
             if len(ds) > 0:
                 task_dsets.append(("sharegpt4v", ds))
-                print(f"[task] sharegpt4v: {len(ds)} 样本（已过滤为 COCO 子集）")
+                print(f"[task] sharegpt4v: {len(ds)} 样本（COCO 子集，文件={chosen.name}）")
             else:
-                print("[skip] sharegpt4v: 过滤后 0 样本")
+                print(f"[skip] sharegpt4v: {chosen.name} 过滤后 0 样本")
         else:
             print("[skip] sharegpt4v: 找不到 json")
     else:
