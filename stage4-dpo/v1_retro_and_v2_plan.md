@@ -195,7 +195,7 @@ step 500:
 v1 复盘时只跑了 POPE，但 v2 必须跑全量评测才能判定有没有 alignment tax：
 
 ```bash
-python stage2/04_eval_stage2.py \
+python stage2-v1/04_eval_stage2.py \
   --stage2_ckpt /content/drive/MyDrive/qwenvl3/stage4_dpo_v2_ckpt \
   --stage1_ckpt /content/drive/MyDrive/qwenvl3/stage1_projector_ckpt \
   --eval_data_root /content/drive/MyDrive/qwenvl3/data/eval \

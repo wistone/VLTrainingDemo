@@ -27,7 +27,7 @@
 == 用法 ==
 
   全跑：
-    python stage2/04_eval_stage2.py \\
+    python stage2-v1/04_eval_stage2.py \\
         --stage2_ckpt /content/drive/MyDrive/qwenvl3/stage2_ckpt \\
         --stage1_ckpt /content/drive/MyDrive/qwenvl3/stage1_ckpt_v3 \\
         --eval_data_root /content/drive/MyDrive/qwenvl3/data/eval \\
@@ -35,10 +35,10 @@
         --stage1_data_root /content/drive/MyDrive/qwenvl3/data/llava-pretrain
 
   快速 sanity（每任务 100 题，约 30 min）:
-    python stage2/04_eval_stage2.py ... --n_refcoco 100 --n_pope 200 --n_vqav2 100
+    python stage2-v1/04_eval_stage2.py ... --n_refcoco 100 --n_pope 200 --n_vqav2 100
 
   只跑 grounding (天然 held-out 最严谨):
-    python stage2/04_eval_stage2.py ... --skip pope vqav2 stage1_regression
+    python stage2-v1/04_eval_stage2.py ... --skip pope vqav2 stage1_regression
 """
 import argparse
 import io
@@ -91,7 +91,7 @@ from PIL import Image  # noqa: E402
 sys.path.insert(0, str(Path(__file__).parent.parent / "stage1"))
 from _common import install_custom_projector  # noqa: E402
 
-# stage2/_common2.py: ChatFormatter（用其 image token expansion 和 chat 模板逻辑）
+# stage2-v1/_common2.py: ChatFormatter（用其 image token expansion 和 chat 模板逻辑）
 sys.path.insert(0, str(Path(__file__).parent))
 
 

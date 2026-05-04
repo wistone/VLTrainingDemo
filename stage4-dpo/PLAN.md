@@ -182,7 +182,7 @@ stage4-dpo/
 ├── 01_prepare_dpo_data.py   ← 下偏好数据 + 标准化格式
 ├── _common_dpo.py           ← DPO dataset 类 + collator
 ├── 03_train_dpo.py          ← TRL DPOTrainer 接入（待写）
-└── 04_eval_dpo.py           ← 沿用 stage2/04_eval_stage2.py（不需要重写）
+└── 04_eval_dpo.py           ← 沿用 stage2-v1/04_eval_stage2.py（不需要重写）
 ```
 
 ### 关键技术点

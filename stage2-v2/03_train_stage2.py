@@ -1,6 +1,6 @@
 """Stage 2-v2 (Phase 1+) 多任务训练。
 
-跟 stage2/03_train_stage2.py 区别：
+跟 stage2-v1/03_train_stage2.py 区别：
   ✨ 新增 RefCOCO+ / RefCOCOg 加入训练 mix
   ✨ 新增 TextVQA 加入训练 mix（首次接入，给 OCR 专项能力）
   ✨ 默认 LoRA r=64 (从 r=16 升级)，alpha=128 (保持 alpha/r=2)

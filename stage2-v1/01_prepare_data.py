@@ -17,9 +17,9 @@
 跑完后按 `[done]` 行核对实际成功项。
 
 用法（CPU runtime 即可，能并行训练 session）：
-    !python stage2/01_prepare_data.py                   # 全量
-    !python stage2/01_prepare_data.py --only essential  # 只下 LLaVA-Instruct + COCO
-    !python stage2/01_prepare_data.py --skip coco       # 跳过大文件
+    !python stage2-v1/01_prepare_data.py                   # 全量
+    !python stage2-v1/01_prepare_data.py --only essential  # 只下 LLaVA-Instruct + COCO
+    !python stage2-v1/01_prepare_data.py --skip coco       # 跳过大文件
 """
 import argparse
 import json
@@ -281,7 +281,7 @@ def main():
     verify_llava_coco_link()
 
     print("\n下一步：")
-    print("  1. 跑 baseline eval: python stage2/02_baseline_eval.py ...")
+    print("  1. 跑 baseline eval: python stage2-v1/02_baseline_eval.py ...")
     print("  2. 等数据下完 + Stage 1 训完 → Stage 2 训练")
 
 

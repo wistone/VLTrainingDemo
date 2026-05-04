@@ -1,7 +1,7 @@
 #!/bin/bash
 # Stage 2 Colab 环境初始化
 # 在 Stage 1 setup.sh 基础上加：peft（LoRA）、bitsandbytes（QLoRA 备用）、wget（COCO 下载）
-# 用法: !bash stage2/setup.sh
+# 用法: !bash stage2-v1/setup.sh
 set -e
 
 echo "=== GPU/CPU 检查 ==="
@@ -47,7 +47,7 @@ print('Stage 2 deps OK')
 echo
 echo "=== 提示 ==="
 echo "数据下载到 Drive:    /content/drive/MyDrive/qwenvl3/data/stage2/"
-echo "首次启动数据下载:    !python /content/QwenVL3/stage2/01_prepare_data.py"
+echo "首次启动数据下载:    !python /content/QwenVL3/stage2-v1/01_prepare_data.py"
 echo "预期 Drive 占用:     LLaVA-Instruct (~50MB) + COCO 18GB + OCR-VQA ~3GB ≈ 22GB"
 echo
 echo "Setup complete."

@@ -15,16 +15,16 @@
 == 用法 ==
 
   默认全下：
-    python stage2/04_download_eval_data.py \\
+    python stage2-v1/04_download_eval_data.py \\
         --eval_root /content/drive/MyDrive/qwenvl3/data/eval
 
   只下小的 (POPE + MME)，跳过 VQAv2 / NoCaps：
-    python stage2/04_download_eval_data.py \\
+    python stage2-v1/04_download_eval_data.py \\
         --eval_root /content/drive/MyDrive/qwenvl3/data/eval \\
         --skip vqav2 nocaps
 
   Drive 空间紧张：
-    python stage2/04_download_eval_data.py ... --skip vqav2
+    python stage2-v1/04_download_eval_data.py ... --skip vqav2
 """
 import argparse
 import os
@@ -155,7 +155,7 @@ def main():
             print(f"  {name}: (跳过 / 未下载)")
 
     print("\n下一步:")
-    print(f"  python stage2/04_eval_stage2.py \\")
+    print(f"  python stage2-v1/04_eval_stage2.py \\")
     print(f"      --stage2_ckpt /content/drive/MyDrive/qwenvl3/stage2_ckpt \\")
     print(f"      --stage1_ckpt /content/drive/MyDrive/qwenvl3/stage1_ckpt_v3 \\")
     print(f"      --eval_data_root {eval_root} \\")

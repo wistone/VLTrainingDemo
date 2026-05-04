@@ -43,7 +43,7 @@ from typing import Dict
 
 
 def _ensure_torchao_compat():
-    """同 stage2/03_train_stage2.py 的处理：卸掉 Colab 预装的 torchao 0.10。"""
+    """同 stage2-v1/03_train_stage2.py 的处理：卸掉 Colab 预装的 torchao 0.10。"""
     import importlib.util
     if importlib.util.find_spec("torchao") is None:
         return

@@ -1,6 +1,6 @@
 """Stage 2-v2 (Phase 1+) 数据下载 — 在 v1 基础上补 RefCOCO+ 和 RefCOCOg。
 
-跟 stage2/01_prepare_data.py 共享相同 DRIVE_ROOT，所以已经下过的数据
+跟 stage2-v1/01_prepare_data.py 共享相同 DRIVE_ROOT，所以已经下过的数据
 （LLaVA-Instruct / COCO / RefCOCO / TextVQA / ShareGPT4V）会被跳过，
 只下新增的 RefCOCO+ 和 RefCOCOg。
 

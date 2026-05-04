@@ -27,14 +27,14 @@
 == 用法 ==
 
   Stage 1 baseline (caption-only, 默认):
-    python stage2/02_baseline_eval.py \\
+    python stage2-v1/02_baseline_eval.py \\
         --ckpt_dir /content/drive/MyDrive/qwenvl3/stage1_ckpt_v3/checkpoint-XXXX \\
         --processor_dir /content/drive/MyDrive/qwenvl3/stage1_init \\
         --stage2_data_root /content/drive/MyDrive/qwenvl3/data/stage2 \\
         --n_per_task 40
 
   Stage 2 后正式 eval (with_question):
-    python stage2/02_baseline_eval.py ... --prompt_mode with_question
+    python stage2-v1/02_baseline_eval.py ... --prompt_mode with_question
 """
 import argparse
 import io

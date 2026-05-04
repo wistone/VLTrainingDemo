@@ -10,7 +10,7 @@
 
 == 用法 ==
 
-  python stage2/05_sample_training_data.py \\
+  python stage2-v1/05_sample_training_data.py \\
       --stage2_data_root /content/drive/MyDrive/qwenvl3/data/stage2 \\
       --output /content/drive/MyDrive/qwenvl3/data_samples/stage2_training_data.html
 

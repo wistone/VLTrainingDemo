@@ -99,7 +99,7 @@ loss 立刻能从 ln(152K) ≈ 11.93 降到 1.7。详见 `stage1/_common.py` 里
 >
 > **教训**:任何 fallback / 自动选择都必须 print,最好对非首选还要 warn。两个 bug 催生了 v2,也成了贯穿整个项目的座右铭。
 
-**最终结果**:RefCOCO val [Acc@0.5](mailto:Acc@0.5) 21.2% / POPE F1 77.9% / NoCaps rep_rate **0%**(Stage 1 死循环彻底治好)/ VQAv2 57.2%。详见 [stage2/README.md](stage2/README.md)。
+**最终结果**:RefCOCO val [Acc@0.5](mailto:Acc@0.5) 21.2% / POPE F1 77.9% / NoCaps rep_rate **0%**(Stage 1 死循环彻底治好)/ VQAv2 57.2%。详见 [stage2-v1/README.md](stage2-v1/README.md)。
 
 ### Stage 2-v2 · Phase 1+ 改进(修 silent bug + 翻倍容量)
 
@@ -352,13 +352,13 @@ bash stage2-v2/setup.sh
 python stage2-v2/01_prepare_data.py --only_phase1plus
 # 手动下 RefCOCO+ UNC pickle(见 stage2-v2/README.md §🛠️ 启动命令)
 python stage2-v2/03_train_stage2.py --no_gradient_checkpointing --batch_size 8 --grad_accum 4
-python stage2/04_eval_stage2.py      # 复用 stage2 的 eval(同接口)
+python stage2-v1/04_eval_stage2.py      # 复用 stage2-v1 的 eval(同接口)
 
 # 3. Stage 4 DPO v2 (~4h on Blackwell)
 bash stage4-dpo/setup.sh
 python stage4-dpo/01_prepare_dpo_data.py    # RLAIF-V 83K → Drive
 python stage4-dpo/03_train_dpo.py --beta 0.3 --learning_rate 5e-6
-python stage2/04_eval_stage2.py              # 同 eval pipeline
+python stage2-v1/04_eval_stage2.py              # 同 eval pipeline
 python stage4-dpo/04_make_eval_report.py     # → HTML 报告
 ```
 
@@ -394,7 +394,7 @@ python stage4-dpo/04_make_eval_report.py     # → HTML 报告
 
 - [PLAN.md](PLAN.md) — 项目最初的全程计划(2026-05-01)
 - [stage1/README.md](stage1/README.md) — Projector 对齐详细复盘(8 个工程坑)
-- [stage2/README.md](stage2/README.md) — v1 多任务 LoRA + 数据漏洞剖析
+- [stage2-v1/README.md](stage2-v1/README.md) — v1 多任务 LoRA + 数据漏洞剖析
 - [stage2-v2/README.md](stage2-v2/README.md) — Phase 1+ 改进 + RefCOCO+ UNC pickle 加载
 - [stage3/PLAN.md](stage3/PLAN.md) — Stage 3 完整计划(未执行,基于 v2 实测的决策推理)
 - [stage4-dpo/PLAN.md](stage4-dpo/PLAN.md) — DPO 原始计划
@@ -404,7 +404,7 @@ python stage4-dpo/04_make_eval_report.py     # → HTML 报告
 **HTML 评测报告**(自包含,直接浏览器打开):
 
 - `stage1/holdout_eval_compare.html` — Stage 1 ckpt-4500 vs ckpt-11500 对比
-- `stage2/stage2_ckpt_step8088_inspect_samples.html` — Stage 2 v1 final(3.6MB,带样本图)
+- `stage2-v1/stage2_ckpt_step8088_inspect_samples.html` — Stage 2 v1 final(3.6MB,带样本图)
 - `stage2-v2/stage2_v2_inspect_samples.html` — Stage 2-v2 final(5MB,带样本图)
 - `stage4-dpo/stage4_dpo_v2_report.html` — Stage 4 DPO v2 最终报告(611KB,12 张真实样本图卡)
 

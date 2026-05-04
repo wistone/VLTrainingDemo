@@ -1,6 +1,6 @@
 """Stage 2-v2 (Phase 1+) 共享工具。
 
-跟 stage2/_common2.py 区别：
+跟 stage2-v1/_common2.py 区别：
   ✨ 新增 TextVQATaskDataset           — OCR 类问答（多数投票 + 共识过滤）
   ✨ RefCOCOTaskDataset 支持 jxu124    — bbox xyxy + image_id 查 COCO zip + 多 caption
   ✨ 新增 RefCOCOPickleTaskDataset     — 从 UNC 原版 pickle + COCO instances 加载，

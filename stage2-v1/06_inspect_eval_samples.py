@@ -11,7 +11,7 @@
 
 == 用法 ==
 
-  python stage2/06_inspect_eval_samples.py \\
+  python stage2-v1/06_inspect_eval_samples.py \\
       --eval_out_dir /content/drive/MyDrive/qwenvl3/eval_stage2/stage2_ckpt \\
       --eval_data_root /content/drive/MyDrive/qwenvl3/data/eval \\
       --stage2_data_root /content/drive/MyDrive/qwenvl3/data/stage2
@@ -457,7 +457,7 @@ def render_overall_summary(summary_metrics, eval_out_dir_name, ckpt_step=None):
     <div class="setup-summary">
       <b>本次评测对象</b>: <code>{html_escape(eval_out_dir_name)}</code> ({step_str})<br>
       <b>训练配置</b>: Qwen2.5-1.5B-Instruct + SigLIP2-SO400M + ProjectorWithNorm + LoRA<br>
-      <b>训练数据</b>: 详见 <code>stage2/README.md</code> 或 <code>stage2-v2/README.md</code>
+      <b>训练数据</b>: 详见 <code>stage2-v1/README.md</code> 或 <code>stage2-v2/README.md</code>
     </div>"""
 
     return f"""

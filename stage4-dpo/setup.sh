@@ -2,7 +2,7 @@
 # Stage 4 DPO 环境初始化
 # 用法: !bash stage4-dpo/setup.sh
 #
-# 跟 stage2/setup.sh 几乎一样，多装个 trl（参考用，我们的训练代码用的是自定义 DPO loss
+# 跟 stage2-v1/setup.sh 几乎一样，多装个 trl（参考用，我们的训练代码用的是自定义 DPO loss
 # 不强依赖 trl，但 trl 的 reference 实现可以用来交叉验证）。
 set -e
 

@@ -25,18 +25,18 @@ Rex-Omni 是 IDEA Research 的 grounding 专用 3B 模型 (https://github.com/ID
 == 用法 ==
 
   默认 1000 sample × 3 split (~3.5h on L4):
-    python /content/QwenVL3/stage2/06_eval_rex_omni.py \\
+    python /content/QwenVL3/stage2-v1/06_eval_rex_omni.py \\
         --stage2_data_root /content/drive/MyDrive/qwenvl3/data/stage2 \\
         --out_dir /content/drive/MyDrive/qwenvl3/eval_external/rex_omni
 
   快速 sanity (~25 min on L4):
-    python /content/QwenVL3/stage2/06_eval_rex_omni.py \\
+    python /content/QwenVL3/stage2-v1/06_eval_rex_omni.py \\
         --stage2_data_root /content/drive/MyDrive/qwenvl3/data/stage2 \\
         --out_dir /content/drive/MyDrive/qwenvl3/eval_external/rex_omni_sanity \\
         --n_refcoco 100
 
   只跑 val (省一半时间):
-    python /content/QwenVL3/stage2/06_eval_rex_omni.py ... --skip_splits testA testB
+    python /content/QwenVL3/stage2-v1/06_eval_rex_omni.py ... --skip_splits testA testB
 """
 import argparse
 import io

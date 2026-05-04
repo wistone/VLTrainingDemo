@@ -15,7 +15,7 @@
 == 用法 ==
 
   烟雾测试（10 分钟内，验证 pipeline 通畅）:
-    python stage2/03_train_stage2.py --smoke_test \\
+    python stage2-v1/03_train_stage2.py --smoke_test \\
         --stage1_ckpt /content/drive/MyDrive/qwenvl3/stage1_ckpt_v3/checkpoint-XXXX \\
         --processor_dir /content/drive/MyDrive/qwenvl3/stage1_init \\
         --stage2_data_root /content/drive/MyDrive/qwenvl3/data/stage2 \\
@@ -23,7 +23,7 @@
         --report_to none
 
   正式训练（~6h on 40GB A100, batch 4 + grad_accum 8 = effective 32）:
-    python stage2/03_train_stage2.py \\
+    python stage2-v1/03_train_stage2.py \\
         --stage1_ckpt /content/drive/MyDrive/qwenvl3/stage1_ckpt_v3/checkpoint-XXXX \\
         --processor_dir /content/drive/MyDrive/qwenvl3/stage1_init \\
         --stage2_data_root /content/drive/MyDrive/qwenvl3/data/stage2 \\
@@ -81,7 +81,7 @@ from transformers import (  # noqa: E402
 sys.path.insert(0, str(Path(__file__).parent.parent / "stage1"))
 from _common import get_components, install_custom_projector  # noqa: E402
 
-# stage2/_common2.py: 数据 + chat 格式 + LoRA helpers
+# stage2-v1/_common2.py: 数据 + chat 格式 + LoRA helpers
 sys.path.insert(0, str(Path(__file__).parent))
 from _common2 import (  # noqa: E402
     ChatFormatter,
