@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="UTF-8">
+<title>Stage 1 Eval Compare: step 4500 (26%) → step 11500 (66%)</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif;
+    background: #f4f6f8; margin: 0; padding: 24px; color: #1a1a1a;
+  }
+  .container { max-width: 1400px; margin: 0 auto; }
+  h1 { margin-top: 0; }
+  .summary {
+    background: white; padding: 18px 24px; border-radius: 10px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.06); margin-bottom: 24px;
+  }
+  .summary h2 { margin: 0 0 12px 0; font-size: 18px; }
+  .summary-tbl { border-collapse: collapse; width: 100%; }
+  .summary-tbl th, .summary-tbl td {
+    padding: 10px 12px; text-align: left; border-bottom: 1px solid #eee;
+  }
+  .summary-tbl th { font-weight: 600; color: #6b7280; font-size: 13px; }
+  .better { color: #16a34a; font-weight: 600; }
+  .neutral { color: #6b7280; }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    background: white; border-radius: 10px; overflow: hidden;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+  }
+  .card-img-wrap { position: relative; }
+  .card-img {
+    width: 100%; aspect-ratio: 4 / 3; object-fit: cover;
+    background: #000; display: block;
+  }
+  .no-img {
+    width: 100%; aspect-ratio: 4 / 3; background: #f3f4f6;
+    display: flex; align-items: center; justify-content: center; color: #9ca3af;
+  }
+  .card-caption {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    background: rgba(0,0,0,0.6); color: white; font-size: 11px;
+    padding: 4px 10px;
+  }
+  .card-body { padding: 12px 14px; }
+  .row { margin-bottom: 12px; }
+  .row .label {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.5px; color: #6b7280; margin-bottom: 4px;
+  }
+  .row .label.old { color: #b45309; }
+  .row .label.new { color: #1d4ed8; }
+  .row .text { font-size: 13px; line-height: 1.45; }
+  .row .text i { color: #b91c1c; }
+  .row .meta { font-size: 11px; color: #9ca3af; margin-top: 2px; }
+  .row.gt .text {
+    background: #f9fafb; padding: 6px 10px; border-radius: 4px;
+    color: #4b5563; font-style: italic; font-size: 12px;
+  }
+  .verdict {
+    display: inline-block; padding: 2px 9px; border-radius: 4px;
+    font-size: 11px; font-weight: 600; margin-bottom: 6px;
+    letter-spacing: 0.3px;
+  }
+  .v-good   { background: #dcfce7; color: #15803d; }
+  .v-mixed  { background: #fef3c7; color: #92400e; }
+  .v-bad    { background: #fee2e2; color: #b91c1c; }
+  .v-broken { background: #e5e7eb; color: #374151; }
+  .v-same   { background: #e0e7ff; color: #3730a3; }
+  .analysis {
+    background: #fffbeb; border-left: 3px solid #f59e0b;
+    padding: 8px 10px; border-radius: 4px;
+    font-size: 12px; line-height: 1.5; color: #1f2937;
+    margin-top: 10px;
+  }
+  .overall {
+    background: white; padding: 18px 24px; border-radius: 10px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.06); margin-bottom: 24px;
+    line-height: 1.65;
+  }
+  .overall h2 { margin: 0 0 12px 0; font-size: 18px; }
+  .overall .vline { font-size: 15px; font-weight: 600; margin: 8px 0 14px; }
+  .overall .stats { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0 16px; }
+  .overall .pill {
+    padding: 6px 12px; border-radius: 18px; font-size: 12px; font-weight: 600;
+  }
+  .overall ul { margin: 6px 0 0 18px; padding: 0; }
+  .overall li { margin-bottom: 4px; font-size: 13px; }
+  .overall code { background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+</style>
+</head><body>
+<div class="container">
+  <h1>Stage 1 训练前后对比</h1>
+  <p style="color:#6b7280">step 4500 (26%) ⟶ step 11500 (66%)（同一批 holdout 20 张图）</p>
+  
+    <div class="summary">
+      <h2>📊 摘要对比</h2>
+      <table class="summary-tbl">
+        <thead><tr><th></th><th>step 4500 (26%)</th><th>step 11500 (66%)</th><th>变化</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>平均生成 caption 长度（词）</td>
+            <td>11.6</td>
+            <td>10.4</td>
+            <td class="neutral">
+              -1.2
+            </td>
+          </tr>
+          <tr>
+            <td>带图 loss</td>
+            <td>1.902</td>
+            <td>1.727</td>
+            <td class="better">
+              -0.175
+            </td>
+          </tr>
+          <tr>
+            <td>Image-token Δloss（视觉信号强度）</td>
+            <td>3.135</td>
+            <td>3.437</td>
+            <td class="better">
+              +0.302
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="overall">
+      <h2>🧭 整体解读</h2>
+      <div class="vline">结论：step 11500 整体优于 step 4500，方向正确，可以进入 Stage 2。</div>
+      <div class="stats">
+        <span class="pill v-good">🟢 改善 9 / 20</span>
+        <span class="pill v-same">➖ 持平 5 / 20</span>
+        <span class="pill v-mixed">🟡 喜忧参半 3 / 20</span>
+        <span class="pill v-bad">🔴 退化 1 / 20</span>
+        <span class="pill v-broken">⚫ 双方都崩坏 2 / 20</span>
+      </div>
+      <p><b>三个核心信号都向好：</b></p>
+      <ul>
+        <li>带图 loss 1.902 → 1.727（<code>-0.175</code>）</li>
+        <li>Image-token Δloss 3.135 → 3.437（<code>+0.302</code>）—— 模型对图像的依赖在加深，不是在背语料统计</li>
+        <li>9 个 case 明确改善，且改善的多是「需要看清图才能写对」的硬骨头：识别 polka dot 印花 (#4)、Bernese 犬种 + 梵高画作 (#14)、Chevrolet Blazer 拼写 (#12)、Chris Stapleton 名人识别 (#17)</li>
+      </ul>
+      <p style="margin-top:12px"><b>需要注意的退化模式：</b></p>
+      <ul>
+        <li><b>OCR 越界 → token 重复循环</b>（#5 UAG tank）：模型学会读「UAG」品牌名后，紧跟着想续写 SKU 数字，掉进「3 0 0 0…」的复读陷阱。</li>
+        <li><b>BPE 陷阱</b>（#8 Subaru、#13 jerusalems）：罕见品牌词被 tokenizer 切成奇怪 subword (subarv / subarun)，模型一旦预测错首个 subword，就会在错误的 token 上自我循环。</li>
+        <li><b>低信息量场景</b>（#18 空白展厅）：图里几乎只有白墙，模型没有视觉锚点，只能复读 "large white wall"。</li>
+      </ul>
+      <p style="margin-top:12px"><b>对 Stage 2 的预期：</b>这些退化大部分会被自动修复 —— Stage 1 是「裸 caption 续写」模式，模型一旦走偏就停不下来；Stage 2 引入 chat 模板（<code>&lt;|im_start|&gt;</code>）+ 多任务 instruction 数据后，输出格式被强约束，token 重复循环会大幅减少。</p>
+    </div>
+
+  <div class="grid">
+    
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=11VojlpExwe6DXkP9tRLNQdenlZe2cE5U&sz=w600" loading="lazy" alt="00013/000134467.jpg">
+            <div class="card-caption">#1 · 00013/000134467.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">i&#x27;m a simple woman coffee mug coffee mug coffee mug coffee mug coffee mug coffee mug coffee mug</div>
+              <div class="meta">18 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">i&#x27;m a simple woman coffee and books hoodie</div>
+              <div class="meta">8 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">a simple woman books and camera hoodie</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-good">🟢 改善</span>
+              4500 陷入 "coffee mug" 重复循环；11500 跳出循环并正确识别为 hoodie 商品图。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=1uopfTNbnmZz1DbJDLRPATipliO93Fkwd&sz=w600" loading="lazy" alt="00061/000614067.jpg">
+            <div class="card-caption">#2 · 00061/000614067.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">back to school clipart</div>
+              <div class="meta">4 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">watercolor back to school clipart</div>
+              <div class="meta">5 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">watercolor back to school background</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-good">🟢 改善</span>
+              11500 增加了画风修饰词 "watercolor"，与 GT 一致；说明模型对画面风格的判断变得更准。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=1W0MzqL_e8Nbtlq9XXDMDe-yyKOwAlPD5&sz=w600" loading="lazy" alt="00075/000754812.jpg">
+            <div class="card-caption">#3 · 00075/000754812.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">three baskets of easter eggs with a ribbon and a bow</div>
+              <div class="meta">11 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">three easter baskets with colorful ribbons and eggs</div>
+              <div class="meta">8 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">small fabric easter basket with three bags of eggs</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-same">➖ 持平</span>
+              两版都基本描述对了主体（篮子 / 复活节蛋 / 丝带），只是表述不同；都没说出 GT 中的 "fabric" 材质细节。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=1bUw07MR455y7Y8G9KhOCJFfdqjeo1RgP&sz=w600" loading="lazy" alt="00093/000934915.jpg">
+            <div class="card-caption">#4 · 00093/000934915.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">taylor swift in a black dress with a black skirt and a black jacket</div>
+              <div class="meta">14 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">taylor swift in black and white polka dot dress</div>
+              <div class="meta">9 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">taylor taylor swift in polka dot print dress and black bag</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-good">🟢 改善</span>
+              11500 识别出 "polka dot" 印花（GT 关键词），4500 错把整身写成黑色；细粒度纹理识别能力提升。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=12IBQr0hpt0zwv73TIlpnEh3m-r1gQxK-&sz=w600" loading="lazy" alt="00118/001185826.jpg">
+            <div class="card-caption">#5 · 00118/001185826.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">a woman in a black tank top and black leggings is posing in front of a mirror with her arms up</div>
+              <div class="meta">21 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">women&#x27;s uag tank 3 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 </div>
+              <div class="meta">32 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">women&#x27;s uag charged performance tank</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-bad">🔴 退化</span>
+              <b>本批次唯一明确退化的 case。</b>11500 学会了 OCR 出包装上的 "UAG" 品牌字母（这其实是新增能力），但紧接着商品图里的型号数字 "3.0" 触发了「电商标题续写」捷径，掉进 "0 0 0…" 的复读陷阱；4500 反而是更通顺的常规描述。本质是 OCR 能力上来了、但 caption 续写格式还没学会克制。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=12dgDpUmRFF8krG5_rSyZYmUlvczEV8Te&sz=w600" loading="lazy" alt="00118/001188493.jpg">
+            <div class="card-caption">#6 · 00118/001188493.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">a white diamond with the text hoth battle mode collectible token locations</div>
+              <div class="meta">12 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">the logo for the hoth battle mode collectible token locations</div>
+              <div class="meta">10 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">the hoth battle mode logo, with the ice mountain in the background</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-same">➖ 持平</span>
+              两版都正确 OCR 出 "hoth battle mode" 文字；都没识别出 GT 提到的 ice mountain 背景。11500 的 "logo" 用词比 4500 的 "white diamond" 更贴近 GT。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=10dOREIvJYJvEKQz-A1A2L50DDNhseXtm&sz=w600" loading="lazy" alt="00131/001312416.jpg">
+            <div class="card-caption">#7 · 00131/001312416.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">a photo of a drink filling machine</div>
+              <div class="meta">7 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">the process of making carbonated drink filling machine</div>
+              <div class="meta">8 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">automated automatic drinking machine</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-mixed">🟡 喜忧参半</span>
+              11500 加了 "carbonated"（更具体），但前缀 "the process of making" 反而不通顺；GT 本身写得也很奇怪，参考价值有限。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=19pHh-Es3KrEJ92Y65XT9ZhbSf9H7J0Oj&sz=w600" loading="lazy" alt="00158/001586094.jpg">
+            <div class="card-caption">#8 · 00158/001586094.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">the 2017 subarv subarv subarv subarv subarv subarv subarv subarv subarv subarv subarv subarv subarv subarv subarv subarv subarv subarv subarv sub</div>
+              <div class="meta">22 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">the 2017 subarun subarun subarun subarun subarun subarun subarun subarun subarun subarun subarun subarun subarun subarun subarun subarun subarun subarun subarun sub</div>
+              <div class="meta">22 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">a silver subarunt on display in the car showroom</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-broken">⚫ 双方都崩坏</span>
+              典型的 <b>BPE 陷阱</b>：罕见品牌词 "Subaru" 不在 Qwen tokenizer 的常用 token 里，被切成奇怪 subword（subarv / subarun），模型一旦预测错首个 subword，就会在错误的 token 上自我循环。Stage 1 的纯 caption 训练解决不了这种结构性问题，要等 Stage 2 的 chat 模板和 EOS 监督。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=1-b3uizwbkwOuMfx5xkl0g1yyloGdG1R4&sz=w600" loading="lazy" alt="00183/001839237.jpg">
+            <div class="card-caption">#9 · 00183/001839237.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">a vintage coaster with the quote from the great gatsby</div>
+              <div class="meta">10 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">a gold coaster with the quote from the great gatsby</div>
+              <div class="meta">10 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">a gold coaster with a quote by the great gats</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-good">🟢 改善</span>
+              颜色识别从 "vintage" 修正为 "gold"，与 GT 一致；细粒度颜色判断变准。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=1LoaJZF7FjfpYrYWDGZciScV6Ti0ruq35&sz=w600" loading="lazy" alt="00188/001883900.jpg">
+            <div class="card-caption">#10 · 00188/001883900.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">a flyer for a school spirit event</div>
+              <div class="meta">7 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">a flyer for a school spirit event</div>
+              <div class="meta">7 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">a poster for the school spirit tasting and great food fundraiser</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-same">➖ 持平</span>
+              两版输出完全相同；都把 GT 中的 "tasting / fundraiser" 简化成了泛化的 "school spirit event"，OCR 没读到具体活动主题。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=1IwoWapWr7YGHOiVzwN6Nlzr1D_hfAbAh&sz=w600" loading="lazy" alt="00228/002286940.jpg">
+            <div class="card-caption">#11 · 00228/002286940.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">the heart earrings in green</div>
+              <div class="meta">5 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">a pair of green and white heart shaped earrings</div>
+              <div class="meta">9 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">the gold earring and heart charm of this set of earrings, featuring turquoise hearts and czs</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-good">🟢 改善</span>
+              4500 只说 "heart earrings in green"，11500 增加了 "pair / green and white / heart shaped" 等更精确的形态描述；属性识别更细致。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=1c0WsV24rmBZ75wvYYmoRTNbXo7j_4N8E&sz=w600" loading="lazy" alt="00233/002336501.jpg">
+            <div class="card-caption">#12 · 00233/002336501.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">how to install turn signal wiper switch for cheyebler</div>
+              <div class="meta">9 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">how to install turn signal wiper switch for chevrolet blazer</div>
+              <div class="meta">10 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">how to install replace turn signal wiper switch chevy blazer</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-good">🟢 改善</span>
+              OCR 拼写从 "cheyebler"（错乱）修正为 "chevrolet blazer"（正确品牌+车型），这是 ckpt-11500 OCR 能力提升的代表性 case。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=1wm6CeI3aqqR12FYKRbHbuvGjPK6szuN4&sz=w600" loading="lazy" alt="00278/002789130.jpg">
+            <div class="card-caption">#13 · 00278/002789130.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">a logo for my jerusalems store</div>
+              <div class="meta">6 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">the logo for myjersalemstore</div>
+              <div class="meta">4 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">engraved name necklace, script necklace with cross</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-mixed">🟡 喜忧参半</span>
+              11500 把 "my jerusalems store" 粘连成 "myjersalemstore"（词边界丢失，BPE 切分变差）；两版都没识别出 GT 描述的 necklace 主体（图里实际是 logo 文字）。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=17Wf6jfeo2JuTvlzKOJtPDHmRtCHZQ7yx&sz=w600" loading="lazy" alt="00283/002830528.jpg">
+            <div class="card-caption">#14 · 00283/002830528.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">a shih tzu sitting in a field with a painting button</div>
+              <div class="meta">11 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">a bernese mountain dog sitting in front of the van gogh painting pin</div>
+              <div class="meta">13 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">a bernese mountain dog sitting in a field pin</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-good">🟢 大幅改善</span>
+              <b>本批次最亮眼的 case。</b>4500 误判为 shih tzu（小型犬）；11500 同时识别出正确犬种 "bernese mountain dog" + 背景的 "van gogh painting" 风格。细粒度物种识别 + 艺术风格识别两项能力同时跃升，证明视觉表征质量在变好。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=1eU5cIAdONLq4t2hWiHgMIWl1qF_HNUCg&sz=w600" loading="lazy" alt="00288/002889383.jpg">
+            <div class="card-caption">#15 · 00288/002889383.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">a man and woman working on a laptop with the text creating sticky headers with element</div>
+              <div class="meta">16 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">creating sticky headers with element</div>
+              <div class="meta">5 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">creating sticky headers with elementor</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-same">➖ 持平</span>
+              两版都把 "elementor" OCR 成 "element"（漏掉 "or" 后缀）；11500 更专注主题文字，4500 多描述了人物背景。OCR 准确度没变。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=1LMLnONzAqI5j6ZEfk6glx-4msUkW1CGI&sz=w600" loading="lazy" alt="00339/003393398.jpg">
+            <div class="card-caption">#16 · 00339/003393398.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">the cadillac luxury sedan</div>
+              <div class="meta">4 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">the 2019 cadillac escalade</div>
+              <div class="meta">4 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">a silver 2019 cadillac xts on a cobble sidewalk</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-mixed">🟡 喜忧参半</span>
+              11500 加上了年份 "2019"（与 GT 一致，✓），但车型从泛化的 "luxury sedan" 错猜成 "escalade"（GT 是 XTS，✗）。两个细节一升一降。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=1bP5nut3ooZfES6VT4CD-7BVChCG9no1a&sz=w600" loading="lazy" alt="00343/003439338.jpg">
+            <div class="card-caption">#17 · 00343/003439338.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">a man in a cowboy hat and a cowboy hat with the words scarroon in the garden</div>
+              <div class="meta">17 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">chris stapleton in the garden</div>
+              <div class="meta">5 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">chris stapleton in the garden</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-good">🟢 完美命中</span>
+              11500 输出与 GT 完全一致；4500 完全没认出名人。说明 LLM 内部的世界知识已经被「正确接到」视觉特征上 —— projector 桥接质量到位。
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=1qo8a3UqbhZDShhWQbn1HjJAsp5t50Gl_&sz=w600" loading="lazy" alt="00420/004208224.jpg">
+            <div class="card-caption">#18 · 00420/004208224.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">a white room with a large white wall and a large white wall with a large white wall and a large white wall</div>
+              <div class="meta">23 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">a white wall with a large white wall and a large white wall with a large white wall and a large white wall</div>
+              <div class="meta">23 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">white exhibition stand in a gallery with blank frames - stock photo</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-broken">⚫ 双方都崩坏</span>
+              空白展厅图视觉信息密度太低（几乎只有白墙），模型缺少视觉锚点，两版都陷入 "large white wall" 的 token 重复循环。这种低信息量场景是 caption 模型的天然短板。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=1j5kRemByVE55X4Ab3FOkcKRILQRLBnHG&sz=w600" loading="lazy" alt="00509/005091749.jpg">
+            <div class="card-caption">#19 · 00509/005091749.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">the website for the fleet maintenance software</div>
+              <div class="meta">7 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">the website for the fleet maintenance software</div>
+              <div class="meta">7 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">the tatems fleet maintenance software website</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-same">➖ 持平</span>
+              两版输出完全相同；都正确识别为 "fleet maintenance software website"，但都没读出 GT 中的品牌名 "tatems"（罕见词，OCR 难度高）。
+            </div>
+          </div>
+        </div>
+        
+        <div class="card">
+          <div class="card-img-wrap">
+            <img class="card-img" src="https://drive.google.com/thumbnail?id=1KvFkaY6llE9cBVUnTl9dRj0n1IQiyc-K&sz=w600" loading="lazy" alt="00560/005605971.jpg">
+            <div class="card-caption">#20 · 00560/005605971.jpg</div>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="label old">step 4500 (26%)</div>
+              <div class="text">a star template for a star shaped star</div>
+              <div class="meta">8 words</div>
+            </div>
+            <div class="row">
+              <div class="label new">step 11500 (66%)</div>
+              <div class="text">a star template for a star shaped paper star</div>
+              <div class="meta">9 words</div>
+            </div>
+            <div class="row gt">
+              <div class="label">Ground Truth</div>
+              <div class="text">the star template for making the shape of a star</div>
+            </div>
+            <div class="analysis">
+              <span class="verdict v-good">🟢 改善</span>
+              11500 加了 "paper" 材质词，比 4500 的 "star shaped star" 自我重复要好；语句更通顺。
+            </div>
+          </div>
+        </div>
+
+  </div>
+</div>
+</body></html>
